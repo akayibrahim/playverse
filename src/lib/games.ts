@@ -27,7 +27,7 @@ export const GAMES: GameMeta[] = [
     tagline: "Play with gravity, stay in orbit, go as far as you can.",
     emoji: "🪐",
     gradient: "from-cyan-400/60 to-emerald-400/60",
-    status: "soon",
+    status: "live",
   },
   {
     slug: "stacker",
@@ -35,7 +35,7 @@ export const GAMES: GameMeta[] = [
     tagline: "One tap to drop the block — stack the perfect tower.",
     emoji: "🧱",
     gradient: "from-fuchsia-500/60 to-violet-500/60",
-    status: "soon",
+    status: "live",
   },
 ];
 

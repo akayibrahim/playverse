@@ -3,12 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { submitScore, getBestScore } from "@/lib/storage";
 
+type RunStat = { label: string; value: string };
+
 type GameHooks = {
   onScore: (score: number) => void;
-  onGameOver: (
-    score: number,
-    stats: { coins: number; nearMisses: number; distance: number },
-  ) => void;
+  onGameOver: (score: number, stats: RunStat[]) => void;
   onBoost?: (meter: number, active: boolean) => void;
   onPopup?: (text: string) => void;
   best?: number;
@@ -30,7 +29,7 @@ export default function StageCanvas({ slug }: { slug: string }) {
   const [gameOver, setGameOver] = useState(false);
   const [boost, setBoost] = useState(1);
   const [boosting, setBoosting] = useState(false);
-  const [stats, setStats] = useState({ coins: 0, nearMisses: 0, distance: 0 });
+  const [stats, setStats] = useState<RunStat[]>([]);
   const [popups, setPopups] = useState<{ id: number; text: string }[]>([]);
   const popupId = useRef(0);
   const [runId, setRunId] = useState(0);
@@ -43,7 +42,7 @@ export default function StageCanvas({ slug }: { slug: string }) {
     setScore(0);
     setBoost(1);
     setBoosting(false);
-    setStats({ coins: 0, nearMisses: 0, distance: 0 });
+    setStats([]);
     setPopups([]);
     const startBest = getBestScore(slug);
     setBest(startBest);
@@ -142,10 +141,7 @@ export default function StageCanvas({ slug }: { slug: string }) {
             {score.toLocaleString("en-US")}
           </p>
           <p className="text-white/50 text-xs">
-            🪙 {stats.coins} coins · ⚠ {stats.nearMisses} close calls ·{" "}
-            {stats.distance >= 1000
-              ? `${(stats.distance / 1000).toFixed(1)} km`
-              : `${stats.distance} m`}
+            {stats.map((s) => `${s.label} ${s.value}`).join(" · ")}
           </p>
           {score >= best && score > 0 && (
             <p className="text-cyan-300 text-sm">🏆 New best!</p>

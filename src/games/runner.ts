@@ -20,7 +20,7 @@ export type RunnerHooks = {
   onScore?: (score: number) => void;
   onGameOver?: (
     score: number,
-    stats: { coins: number; nearMisses: number; distance: number },
+    stats: { label: string; value: string }[],
   ) => void;
   onBoost?: (meter: number, active: boolean) => void; // meter 0..1
   onPopup?: (text: string) => void;
@@ -836,11 +836,17 @@ export function createGame(
         if (s.mesh.position.y < -1) s.mesh.visible = false;
       }
       if (crashTimer > 0.55) {
-        hooks.onGameOver?.(Math.floor(score), {
-          coins: coinsCollected,
-          nearMisses,
-          distance: Math.floor(distance),
-        });
+        hooks.onGameOver?.(Math.floor(score), [
+          { label: "🪙", value: String(coinsCollected) },
+          { label: "⚠", value: `${nearMisses} close` },
+          {
+            label: "📏",
+            value:
+              distance >= 1000
+                ? `${(distance / 1000).toFixed(1)} km`
+                : `${Math.floor(distance)} m`,
+          },
+        ]);
         return; // stops RAF; StageCanvas handles restart
       }
     }
