@@ -102,11 +102,11 @@ export default function StageCanvas({ slug }: { slug: string }) {
   }, [gameOver]);
 
   return (
-    <div className="relative">
+    <div className="relative flex-1 flex flex-col">
       <div
         ref={containerRef}
         className="card touch-none select-none overflow-hidden
-          h-[60vh] min-h-[380px] relative"
+          flex-1 min-h-[380px] relative"
       />
 
       {/* Boost vignette + popup katmanı */}

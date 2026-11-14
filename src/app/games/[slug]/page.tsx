@@ -24,22 +24,22 @@ export default async function GamePage({
   if (!game) notFound();
 
   return (
-    <main className="flex-1 flex flex-col">
+    <main className="flex-1 flex flex-col min-h-[100dvh]">
       {/* Üst bar */}
       <header className="flex items-center gap-3 px-4 py-3">
         <Link
           href="/"
           className="card px-3 py-1.5 text-sm text-white/70 hover:text-white"
         >
-          ← Oyunlar
+          ← Games
         </Link>
         <h1 className="font-semibold">
           {game.emoji} {game.title}
         </h1>
       </header>
 
-      {/* Oyun sahnesi */}
-      <div className="flex-1 px-4 pb-6">
+      {/* Oyun sahnesi — kalan tüm yüksekliği kaplar */}
+      <div className="flex-1 flex flex-col px-4 pb-4">
         <GameStage slug={game.slug} />
       </div>
     </main>

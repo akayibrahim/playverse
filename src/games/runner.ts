@@ -545,6 +545,7 @@ export function createGame(
   let boostMeter = 1; // 0..1
   let combo = 0;
   let comboTimer = 0;
+  let lastCombo = 0;
   let nearMisses = 0;
   let slowmo = 0;
   let bestBeaten = false;
@@ -658,7 +659,10 @@ export function createGame(
 
       /* combo süresi */
       comboTimer -= sdt;
-      if (comboTimer <= 0 && combo > 0) combo = 0;
+      if (comboTimer <= 0 && combo > 0) {
+        combo = 0;
+        lastCombo = 0;
+      }
 
       /* player movement */
       const targetX = LANE_X[targetLane];
@@ -785,9 +789,13 @@ export function createGame(
           coinsCollected++;
           comboTimer = 2.5;
           combo = Math.min(8, combo + 1);
+          if (combo > lastCombo) {
+            // combo arttıysa popup; x8'de sabit kalınca spam olmasın
+            lastCombo = combo;
+            hooks.onPopup?.(combo > 1 ? `COMBO x${combo}` : `+${COIN_VALUE}`);
+          }
           score += COIN_VALUE * combo;
           sfx.coin(combo);
-          hooks.onPopup?.(combo > 1 ? `COMBO x${combo}` : `+${COIN_VALUE}`);
         }
       }
 
