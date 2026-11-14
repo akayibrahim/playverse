@@ -60,6 +60,19 @@ export default function StageCanvas({ slug }: { slug: string }) {
 
   const restart = () => setRunId((r) => r + 1);
 
+  // Desktop: Enter / Space restarts after game over
+  useEffect(() => {
+    if (!gameOver) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        restart();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [gameOver]);
+
   return (
     <div className="relative">
       <div

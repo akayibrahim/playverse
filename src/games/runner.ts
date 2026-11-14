@@ -1,4 +1,8 @@
 import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 
 /**
  * Neon Runner — v1.0 (full game).
@@ -84,8 +88,10 @@ export function createGame(
   const height = container.clientHeight;
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75)); // bloom ile perf dengesi
   renderer.setSize(width, height);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
   renderer.domElement.style.touchAction = "none";
   container.appendChild(renderer.domElement);
 
@@ -96,6 +102,18 @@ export function createGame(
   const CAM_POS = new THREE.Vector3(0, 4.4, 8.5);
   camera.position.copy(CAM_POS);
   camera.lookAt(0, 0.8, -6);
+
+  /* post-processing: bloom = neon estetiğin kalbi */
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const bloom = new UnrealBloomPass(
+    new THREE.Vector2(width, height),
+    0.85, // strength
+    0.55, // radius
+    0.15, // threshold — sadece parlak öğeler yayılır
+  );
+  composer.addPass(bloom);
+  composer.addPass(new OutputPass());
 
   /* lights */
   scene.add(new THREE.AmbientLight(0x334466, 1.4));
@@ -108,6 +126,18 @@ export function createGame(
   const grid = new THREE.GridHelper(140, 70, 0x7c5cff, 0x2a2f55);
   grid.position.y = -1;
   scene.add(grid);
+
+  /* solid dark ground under the grid — kills the "void" look */
+  const groundGeo = new THREE.PlaneGeometry(220, 220);
+  const groundMat = new THREE.MeshStandardMaterial({
+    color: 0x0a0d22,
+    roughness: 0.35,
+    metalness: 0.75,
+  });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -1.05;
+  scene.add(ground);
 
   /* background planet (static, slowly rotating) */
   const planetGeo = new THREE.IcosahedronGeometry(5, 1);
@@ -127,7 +157,7 @@ export function createGame(
   const playerMat = new THREE.MeshStandardMaterial({
     color: 0x00e0ff,
     emissive: 0x00e0ff,
-    emissiveIntensity: 0.8,
+    emissiveIntensity: 1.3,
     flatShading: true,
   });
   const playerMesh = new THREE.Mesh(playerGeo, playerMat);
@@ -207,7 +237,7 @@ export function createGame(
   const coinMat = new THREE.MeshStandardMaterial({
     color: 0xffc94d,
     emissive: 0xffc94d,
-    emissiveIntensity: 0.9,
+    emissiveIntensity: 1.4,
     flatShading: true,
   });
 
@@ -365,6 +395,12 @@ export function createGame(
       playerMesh.rotation.x += dt * 1.2;
       playerGroup.position.y = 0.6 + Math.abs(Math.sin(t * 6)) * 0.12;
 
+      /* speed FOV kick — hız arttıkça görüş açısı genişler, "uçuş" hissi */
+      const fovTarget =
+        70 + ((speed - BASE_SPEED) / (MAX_SPEED - BASE_SPEED)) * 14;
+      camera.fov += (fovTarget - camera.fov) * Math.min(1, dt * 3);
+      camera.updateProjectionMatrix();
+
       /* track scroll */
       grid.position.z = -(distance % CELL);
       const arr = starGeo.attributes.position.array as Float32Array;
@@ -470,16 +506,19 @@ export function createGame(
     camera.position.x +=
       (playerGroup.position.x * 0.45 - camera.position.x) * Math.min(1, dt * 5);
 
-    renderer.render(scene, camera);
+    composer.render();
   }
   tick();
 
   /* resize & cleanup */
   const onResize = () => {
     if (disposed || !container.clientWidth) return;
-    camera.aspect = container.clientWidth / container.clientHeight;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setSize(w, h);
+    composer.setSize(w, h);
   };
   window.addEventListener("resize", onResize);
 
@@ -508,7 +547,10 @@ export function createGame(
       for (const s of shards) {
         (s.mesh.material as THREE.Material).dispose();
       }
+      groundGeo.dispose();
+      groundMat.dispose();
       grid.dispose();
+      composer.dispose();
       renderer.dispose();
       renderer.domElement.remove();
       audioCtx = null;
