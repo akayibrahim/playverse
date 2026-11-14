@@ -6,6 +6,7 @@ import { submitScore, getBestScore } from "@/lib/storage";
 type GameHooks = {
   onScore: (score: number) => void;
   onGameOver: (score: number) => void;
+  onBoost?: (meter: number) => void;
 };
 type GameInstance = { dispose: () => void };
 type GameModule = {
@@ -22,6 +23,7 @@ export default function StageCanvas({ slug }: { slug: string }) {
   const [score, setScore] = useState(0);
   const [best, setBest] = useState(0);
   const [gameOver, setGameOver] = useState(false);
+  const [boost, setBoost] = useState(1);
   const [runId, setRunId] = useState(0);
 
   useEffect(() => {
@@ -30,6 +32,7 @@ export default function StageCanvas({ slug }: { slug: string }) {
 
     setGameOver(false);
     setScore(0);
+    setBoost(1);
     setBest(getBestScore(slug));
 
     import(`@/games/${slug}`)
@@ -37,6 +40,7 @@ export default function StageCanvas({ slug }: { slug: string }) {
         if (cancelled || !containerRef.current) return;
         instance = mod.createGame(containerRef.current, {
           onScore: (s) => setScore(s),
+          onBoost: (m) => setBoost(m),
           onGameOver: (final) => {
             // submitScore yeni rekorsa onu döndürür
             const recorded = submitScore(slug, final);
@@ -106,13 +110,22 @@ export default function StageCanvas({ slug }: { slug: string }) {
         </div>
       )}
 
+      {/* Boost barı */}
+      <div className="mt-2 mx-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
+        <div
+          className="h-full bg-gradient-to-r from-cyan-400 to-violet-500
+            transition-[width] duration-150"
+          style={{ width: `${Math.round(boost * 100)}%` }}
+        />
+      </div>
+
       {/* HUD */}
-      <div className="mt-3 flex items-center justify-between text-sm px-1">
+      <div className="mt-2 flex items-center justify-between text-sm px-1">
         <span className="text-white/60">
           Score: <strong className="text-white">{score}</strong>
         </span>
         <span className="hidden sm:block text-white/35">
-          ← → keys or swipe
+          ← → steer · ↑/W boost · swipe on mobile
         </span>
         <span className="text-cyan-300">🏆 Best: {best}</span>
       </div>

@@ -17,10 +17,10 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 export type RunnerHooks = {
   onScore?: (score: number) => void;
   onGameOver?: (score: number) => void;
+  onBoost?: (meter: number) => void; // 0..1
 };
 
 const LANE_X = [-2.2, 0, 2.2];
-const PLAYER_RADIUS = 0.45;
 const SPAWN_Z = -70;
 const DESPAWN_Z = 12;
 const BASE_SPEED = 14;
@@ -151,17 +151,41 @@ export function createGame(
   planet.position.set(11, 10, -68);
   scene.add(planet);
 
-  /* player */
+  /* player spaceship */
   const playerGroup = new THREE.Group();
-  const playerGeo = new THREE.IcosahedronGeometry(PLAYER_RADIUS, 1);
   const playerMat = new THREE.MeshStandardMaterial({
     color: 0x00e0ff,
     emissive: 0x00e0ff,
     emissiveIntensity: 1.3,
     flatShading: true,
   });
-  const playerMesh = new THREE.Mesh(playerGeo, playerMat);
-  playerGroup.add(playerMesh);
+  const bodyGeo = new THREE.ConeGeometry(0.32, 1.5, 6);
+  const body = new THREE.Mesh(bodyGeo, playerMat);
+  body.rotation.x = -Math.PI / 2; // burun -z yönüne bakar
+  playerGroup.add(body);
+
+  const wingGeo = new THREE.BoxGeometry(1.5, 0.08, 0.55);
+  const wingMat = new THREE.MeshStandardMaterial({
+    color: 0x2a2f55,
+    emissive: 0x7c5cff,
+    emissiveIntensity: 0.5,
+    metalness: 0.6,
+    roughness: 0.3,
+  });
+  const wings = new THREE.Mesh(wingGeo, wingMat);
+  wings.position.z = 0.35;
+  playerGroup.add(wings);
+
+  const engineGeo = new THREE.SphereGeometry(0.16, 12, 12);
+  const engineMat = new THREE.MeshStandardMaterial({
+    color: 0xff8a3d,
+    emissive: 0xff8a3d,
+    emissiveIntensity: 1.2,
+  });
+  const engine = new THREE.Mesh(engineGeo, engineMat);
+  engine.position.z = 0.85;
+  playerGroup.add(engine);
+
   const playerGlow = new THREE.PointLight(0x00e0ff, 12, 8);
   playerGroup.add(playerGlow);
   playerGroup.position.set(0, 0.6, 0);
@@ -282,6 +306,47 @@ export function createGame(
     }
   }
 
+  /* ambient spaceships (decorative, no collision) */
+  interface AmbientShip {
+    group: THREE.Group;
+    vx: number;
+    baseY: number;
+    phase: number;
+  }
+  const ambientShips: AmbientShip[] = [];
+  const shipHullGeo = new THREE.ConeGeometry(0.5, 2.4, 5);
+  const shipColors = [0x00e0ff, 0xff2d95, 0x7c5cff];
+  const shipMats: THREE.MeshStandardMaterial[] = [];
+  for (let i = 0; i < 3; i++) {
+    const mat = new THREE.MeshStandardMaterial({
+      color: shipColors[i],
+      emissive: shipColors[i],
+      emissiveIntensity: 0.7,
+      flatShading: true,
+    });
+    shipMats.push(mat);
+    const g = new THREE.Group();
+    const hull = new THREE.Mesh(shipHullGeo, mat);
+    const dir = i % 2 === 0 ? 1 : -1;
+    hull.rotation.z = dir > 0 ? -Math.PI / 2 : Math.PI / 2; // burun yönü
+    g.add(hull);
+    const beacon = new THREE.PointLight(shipColors[i], 2.5, 6);
+    g.add(beacon);
+    const baseY = 4 + Math.random() * 7;
+    g.position.set(
+      dir > 0 ? -35 : 35,
+      baseY,
+      -22 - Math.random() * 40,
+    );
+    scene.add(g);
+    ambientShips.push({
+      group: g,
+      vx: dir * (7 + Math.random() * 5),
+      baseY,
+      phase: Math.random() * 10,
+    });
+  }
+
   /* crash particles */
   const shardCount = 26;
   const shardGeo = new THREE.TetrahedronGeometry(0.16, 0);
@@ -329,6 +394,8 @@ export function createGame(
   let scoreTick = 0;
   let lastReported = -1;
   let disposed = false;
+  let boosting = false;
+  let boostMeter = 1; // 0..1
 
   /* input: swipe + keys (+ first interaction unlocks audio) */
   let pointerStartX: number | null = null;
@@ -355,11 +422,48 @@ export function createGame(
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "ArrowLeft" || e.key === "a") moveLane(-1);
     if (e.key === "ArrowRight" || e.key === "d") moveLane(1);
+    if (e.key === "ArrowUp" || e.key === "w") {
+      if (!boosting) {
+        ensureAudio();
+        tone(120, 0.5, "sawtooth", 0.14, 260); // afterburner başlangıç sesi
+      }
+      boosting = true;
+    }
   };
+  const onKeyUp = (e: KeyboardEvent) => {
+    if (e.key === "ArrowUp" || e.key === "w") boosting = false;
+  };
+
+  /* mobil BOOST butonu — oyun kanvasının içinde, DOM seviyesinde */
+  const boostBtn = document.createElement("button");
+  boostBtn.textContent = "⚡ BOOST";
+  boostBtn.setAttribute("aria-label", "Boost");
+  boostBtn.style.cssText =
+    "position:absolute;right:10px;bottom:10px;z-index:5;padding:12px 16px;" +
+    "font:600 12px/1 system-ui,sans-serif;color:#00e0ff;" +
+    "background:rgba(0,224,255,0.08);border:1px solid rgba(0,224,255,0.45);" +
+    "border-radius:10px;cursor:pointer;touch-action:none;" +
+    "-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent";
+  container.appendChild(boostBtn);
+  const boostStart = (e: Event) => {
+    e.preventDefault();
+    if (!boosting) {
+      ensureAudio();
+      tone(120, 0.5, "sawtooth", 0.14, 260);
+    }
+    boosting = true;
+  };
+  const boostEnd = () => {
+    boosting = false;
+  };
+  boostBtn.addEventListener("pointerdown", boostStart);
+  window.addEventListener("pointerup", boostEnd);
+  window.addEventListener("pointercancel", boostEnd);
 
   renderer.domElement.addEventListener("pointerdown", onPointerDown);
   renderer.domElement.addEventListener("pointerup", onPointerUp);
   window.addEventListener("keydown", onKey);
+  window.addEventListener("keyup", onKeyUp);
 
   /* crash */
   function crash() {
@@ -383,21 +487,33 @@ export function createGame(
 
     if (!crashed) {
       speed = Math.min(MAX_SPEED, speed + ACCEL * dt);
-      distance += speed * dt;
+
+      /* boost: afterburner — hız +14, skor x2, meter biterse söner */
+      const wantBoost = boosting && boostMeter > 0;
+      if (wantBoost) boostMeter = Math.max(0, boostMeter - dt * 0.45);
+      else boostMeter = Math.min(1, boostMeter + dt * 0.15);
+      const boostActive = wantBoost;
+      const eff = boostActive ? speed + 14 : speed;
+
+      distance += eff * dt;
       lastDistance = distance;
-      score += speed * dt * 1.5;
+      score += eff * dt * 1.5 * (boostActive ? 2 : 1);
 
       /* player movement */
       const targetX = LANE_X[targetLane];
       const px = playerGroup.position.x;
       playerGroup.position.x = px + (targetX - px) * Math.min(1, dt * 12);
-      playerMesh.rotation.z += dt * 3;
-      playerMesh.rotation.x += dt * 1.2;
+      playerGroup.rotation.z = -(targetX - px) * 0.22; // bankala
       playerGroup.position.y = 0.6 + Math.abs(Math.sin(t * 6)) * 0.12;
+      engineMat.emissiveIntensity = boostActive
+        ? 2.6 + Math.sin(t * 30) * 0.6
+        : 1.2 + Math.sin(t * 12) * 0.15;
 
-      /* speed FOV kick — hız arttıkça görüş açısı genişler, "uçuş" hissi */
+      /* speed FOV kick — boost'ta ekstra genişler, "uçuş" hissi */
       const fovTarget =
-        70 + ((speed - BASE_SPEED) / (MAX_SPEED - BASE_SPEED)) * 14;
+        70 +
+        ((speed - BASE_SPEED) / (MAX_SPEED - BASE_SPEED)) * 14 +
+        (boostActive ? 5 : 0);
       camera.fov += (fovTarget - camera.fov) * Math.min(1, dt * 3);
       camera.updateProjectionMatrix();
 
@@ -405,13 +521,26 @@ export function createGame(
       grid.position.z = -(distance % CELL);
       const arr = starGeo.attributes.position.array as Float32Array;
       for (let i = 0; i < starCount; i++) {
-        arr[i * 3 + 2] += speed * dt * 0.6;
+        arr[i * 3 + 2] += eff * dt * (boostActive ? 1.1 : 0.6);
         if (arr[i * 3 + 2] > DESPAWN_Z) arr[i * 3 + 2] = -90;
       }
       starGeo.attributes.position.needsUpdate = true;
 
       planet.rotation.y += dt * 0.08;
       planet.rotation.x += dt * 0.03;
+
+      /* ambient spaceships cruising across the scene */
+      for (const s of ambientShips) {
+        s.group.position.x += s.vx * dt;
+        s.group.position.y = s.baseY + Math.sin(t * 0.8 + s.phase) * 0.6;
+        s.group.rotation.z = Math.sin(t * 0.5 + s.phase) * 0.08;
+        if (Math.abs(s.group.position.x) > 42) {
+          const dir = s.vx > 0 ? 1 : -1;
+          s.group.position.x = dir > 0 ? -42 : 42;
+          s.group.position.z = -22 - Math.random() * 42;
+          s.baseY = 4 + Math.random() * 7;
+        }
+      }
 
       /* spawns */
       if (distance >= nextObstacleAt) {
@@ -430,7 +559,7 @@ export function createGame(
       /* asteroids */
       for (const o of obstacles) {
         if (!o.active) continue;
-        o.mesh.position.z += speed * dt;
+        o.mesh.position.z += eff * dt;
         o.mesh.rotation.y += dt * 1.5;
         if (o.mesh.position.z > DESPAWN_Z) {
           o.active = false;
@@ -448,7 +577,7 @@ export function createGame(
       for (const c of coins) {
         if (!c.active) continue;
         const mesh = c.mesh;
-        mesh.position.z += speed * dt;
+        mesh.position.z += eff * dt;
         mesh.rotation.y += dt * 4;
         mesh.position.y = 0.6 + Math.sin(t * 5 + mesh.position.z) * 0.1;
         if (mesh.position.z > DESPAWN_Z) {
@@ -470,14 +599,15 @@ export function createGame(
       /* pillars */
       for (const p of pillars) {
         if (!p.visible) continue;
-        p.position.z += speed * dt;
+        p.position.z += eff * dt;
         if (p.position.z > DESPAWN_Z) p.visible = false;
       }
 
-      /* score report ~10 Hz */
+      /* score + boost report ~10 Hz */
       scoreTick += dt;
       if (scoreTick > 0.1) {
         scoreTick = 0;
+        hooks.onBoost?.(boostMeter);
         const s = Math.floor(score);
         if (s !== lastReported) {
           lastReported = s;
@@ -527,10 +657,21 @@ export function createGame(
       disposed = true;
       window.removeEventListener("resize", onResize);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("pointerup", boostEnd);
+      window.removeEventListener("pointercancel", boostEnd);
+      boostBtn.removeEventListener("pointerdown", boostStart);
+      boostBtn.remove();
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       renderer.domElement.removeEventListener("pointerup", onPointerUp);
-      playerGeo.dispose();
+      bodyGeo.dispose();
       playerMat.dispose();
+      wingGeo.dispose();
+      wingMat.dispose();
+      engineGeo.dispose();
+      engineMat.dispose();
+      shipHullGeo.dispose();
+      for (const m of shipMats) m.dispose();
       asteroidGeo.dispose();
       asteroidMat.dispose();
       asteroidEdgeGeo.dispose();
