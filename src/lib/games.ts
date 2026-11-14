@@ -19,7 +19,7 @@ export const GAMES: GameMeta[] = [
     tagline: "Sonsuz pistte koş, şerit değiştir, asteroidlerden kaç.",
     emoji: "🏃",
     gradient: "from-violet-500/60 to-cyan-400/60",
-    status: "soon",
+    status: "live",
   },
   {
     slug: "orbiter",

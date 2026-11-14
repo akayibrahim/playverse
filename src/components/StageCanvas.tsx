@@ -3,37 +3,47 @@
 import { useEffect, useRef, useState } from "react";
 import { submitScore, getBestScore } from "@/lib/storage";
 
+type GameHooks = {
+  onScore: (score: number) => void;
+  onGameOver: (score: number) => void;
+};
 type GameInstance = { dispose: () => void };
 type GameModule = {
-  createGame: (container: HTMLElement) => GameInstance;
+  createGame: (container: HTMLElement, hooks: GameHooks) => GameInstance;
 };
 
 /**
  * Sahne kanvası: her oyun için ortak zemin.
- * src/games/<slug>.ts modülünü dynamic import eder ve dispose'u yönetir.
- * Kullanıcı sahneye dokunmadan çıkmadan cleanup garanti edilir.
+ * src/games/<slug>.ts modülünü dynamic import eder, dispose'u yönetir,
+ * oyunun onScore/onGameOver çağrılarını HUD'a ve skora bağlar.
  */
 export default function StageCanvas({ slug }: { slug: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [score, setScore] = useState(0);
   const [best, setBest] = useState(0);
+  const [gameOver, setGameOver] = useState(false);
+  const [runId, setRunId] = useState(0);
 
   useEffect(() => {
     let instance: GameInstance | null = null;
     let cancelled = false;
-    let timer = 0;
 
+    setGameOver(false);
+    setScore(0);
     setBest(getBestScore(slug));
 
     import(`@/games/${slug}`)
       .then((mod: GameModule) => {
         if (cancelled || !containerRef.current) return;
-        instance = mod.createGame(containerRef.current);
-        // Demo: skor akan sahneden beslenmiyor, şimdilik tick'liyoruz.
-        // Gerçek oyunda createGame bir onScore callback alacak.
-        timer = window.setInterval(() => {
-          setScore((s) => s + 1);
-        }, 500);
+        instance = mod.createGame(containerRef.current, {
+          onScore: (s) => setScore(s),
+          onGameOver: (final) => {
+            // submitScore yeni rekorsa onu döndürür
+            const recorded = submitScore(slug, final);
+            setBest(recorded);
+            setGameOver(true);
+          },
+        });
       })
       .catch(() => {
         if (containerRef.current && !cancelled) {
@@ -44,13 +54,11 @@ export default function StageCanvas({ slug }: { slug: string }) {
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
       instance?.dispose();
-      if (slug === "runner") submitScore(slug, score); // demo: skoru yaz
     };
-    // score'u dependency'ye koymam bilinçli; sadece çıkışta flush ediyoruz.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug]);
+  }, [slug, runId]);
+
+  const restart = () => setRunId((r) => r + 1);
 
   return (
     <div className="relative">
@@ -59,10 +67,39 @@ export default function StageCanvas({ slug }: { slug: string }) {
         className="card touch-none select-none overflow-hidden
           h-[60vh] min-h-[380px] relative"
       />
+
+      {/* Game over ekranı */}
+      {gameOver && (
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center
+            gap-4 bg-[#05060f]/80 backdrop-blur-sm rounded-2xl"
+        >
+          <p className="text-white/60 text-sm">Çarptın!</p>
+          <p className="text-4xl font-bold neon-text">
+            {score.toLocaleString("tr-TR")}
+          </p>
+          {score >= best && score > 0 && (
+            <p className="text-cyan-300 text-sm">🏆 Yeni rekor!</p>
+          )}
+          <button
+            type="button"
+            onClick={restart}
+            className="card px-6 py-3 font-semibold text-lg
+              hover:border-accent active:scale-95 transition"
+          >
+            ↻ Tekrar oyna
+          </button>
+          <p className="text-white/40 text-xs">🏆 En iyi: {best}</p>
+        </div>
+      )}
+
       {/* HUD */}
       <div className="mt-3 flex items-center justify-between text-sm px-1">
         <span className="text-white/60">
           Skor: <strong className="text-white">{score}</strong>
+        </span>
+        <span className="hidden sm:block text-white/35">
+          ← → tuşları veya parmağını kaydır
         </span>
         <span className="text-cyan-300">🏆 En iyi: {best}</span>
       </div>
