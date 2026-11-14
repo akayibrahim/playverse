@@ -18,8 +18,13 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 
 export type RunnerHooks = {
   onScore?: (score: number) => void;
-  onGameOver?: (score: number) => void;
-  onBoost?: (meter: number) => void; // 0..1
+  onGameOver?: (
+    score: number,
+    stats: { coins: number; nearMisses: number; distance: number },
+  ) => void;
+  onBoost?: (meter: number, active: boolean) => void; // meter 0..1
+  onPopup?: (text: string) => void;
+  best?: number; // rekor — geçilince onPopup "NEW BEST" tetikler
 };
 
 const LANE_X = [-2.2, 0, 2.2];
@@ -72,7 +77,12 @@ function tone(
 }
 
 const sfx = {
-  coin: () => tone(880, 0.12, "square", 0.12, 1320),
+  coin: (combo = 1) => {
+    const pitch = 880 * (1 + 0.09 * (combo - 1)); // combo yükseldikçe tiz
+    tone(pitch, 0.12, "square", 0.12, pitch * 1.5);
+  },
+  nearMiss: () => tone(520, 0.18, "sine", 0.14, 1400),
+  best: () => tone(660, 0.4, "triangle", 0.15, 990),
   move: () => tone(340, 0.08, "sine", 0.08, 180),
   crash: () => {
     tone(220, 0.5, "sawtooth", 0.25, 40);
@@ -286,7 +296,7 @@ export function createGame(
   scene.add(stars);
 
   /* asteroids (pooled) — displaced icosahedron = gerçek kayalık görünüm */
-  const obstacles: { mesh: THREE.Mesh; active: boolean }[] = [];
+  const obstacles: { mesh: THREE.Mesh; active: boolean; counted: boolean }[] = [];
   const asteroidGeo = new THREE.IcosahedronGeometry(0.85, 2);
   {
     const pos = asteroidGeo.attributes
@@ -328,10 +338,11 @@ export function createGame(
   function spawnObstacle() {
     let entry = obstacles.find((o) => !o.active);
     if (!entry) {
-      entry = { mesh: makeObstacleMesh(), active: true };
+      entry = { mesh: makeObstacleMesh(), active: true, counted: false };
       obstacles.push(entry);
     }
     const mesh = entry.mesh;
+    entry.counted = false;
 
     // difficulty: sometimes close 2 lanes (always leave 1 open)
     const closedLanes = speed > BASE_SPEED + 6 && Math.random() < 0.35 ? 2 : 1;
@@ -451,6 +462,38 @@ export function createGame(
     );
   }
 
+  /* engine trail havuzu */
+  const trailPool: { mesh: THREE.Mesh; life: number; maxLife: number; size: number }[] = [];
+  const trailGeo = new THREE.SphereGeometry(0.09, 8, 8);
+  const trailMat = new THREE.MeshBasicMaterial({
+    color: 0x00e0ff,
+    transparent: true,
+    opacity: 0.55,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  for (let i = 0; i < 36; i++) {
+    const mesh = new THREE.Mesh(trailGeo, trailMat);
+    mesh.visible = false;
+    scene.add(mesh);
+    trailPool.push({ mesh, life: 0, maxLife: 0.22, size: 1 });
+  }
+  let trailIdx = 0;
+  let trailTimer = 0;
+  const engineWorldPos = new THREE.Vector3();
+
+  function emitTrail(active: boolean) {
+    const t = trailPool[trailIdx % trailPool.length];
+    trailIdx++;
+    engine.getWorldPosition(engineWorldPos);
+    t.mesh.position.copy(engineWorldPos);
+    t.mesh.position.x += (Math.random() - 0.5) * 0.08;
+    t.maxLife = active ? 0.32 : 0.22;
+    t.life = t.maxLife;
+    t.size = active ? 1.5 : 1;
+    t.mesh.visible = true;
+  }
+
   /* crash particles */
   const shardCount = 26;
   const shardGeo = new THREE.TetrahedronGeometry(0.16, 0);
@@ -500,6 +543,11 @@ export function createGame(
   let disposed = false;
   let boosting = false;
   let boostMeter = 1; // 0..1
+  let combo = 0;
+  let comboTimer = 0;
+  let nearMisses = 0;
+  let slowmo = 0;
+  let bestBeaten = false;
 
   /* input: swipe + keys (+ first interaction unlocks audio) */
   let pointerStartX: number | null = null;
@@ -590,28 +638,54 @@ export function createGame(
     const t = clock.getElapsedTime();
 
     if (!crashed) {
-      speed = Math.min(MAX_SPEED, speed + ACCEL * dt);
+      // bullet-time: yakın kaçırışta dünya yavaşlar
+      const ts = slowmo > 0 ? 0.3 : 1;
+      slowmo = Math.max(0, slowmo - dt);
+      const sdt = dt * ts;
+
+      speed = Math.min(MAX_SPEED, speed + ACCEL * sdt);
 
       /* boost: afterburner — hız +14, skor x2, meter biterse söner */
       const wantBoost = boosting && boostMeter > 0;
-      if (wantBoost) boostMeter = Math.max(0, boostMeter - dt * 0.45);
-      else boostMeter = Math.min(1, boostMeter + dt * 0.15);
+      if (wantBoost) boostMeter = Math.max(0, boostMeter - sdt * 0.45);
+      else boostMeter = Math.min(1, boostMeter + sdt * 0.15);
       const boostActive = wantBoost;
       const eff = boostActive ? speed + 14 : speed;
 
-      distance += eff * dt;
+      distance += eff * sdt;
       lastDistance = distance;
-      score += eff * dt * 1.5 * (boostActive ? 2 : 1);
+      score += eff * sdt * 1.5 * (boostActive ? 2 : 1);
+
+      /* combo süresi */
+      comboTimer -= sdt;
+      if (comboTimer <= 0 && combo > 0) combo = 0;
 
       /* player movement */
       const targetX = LANE_X[targetLane];
       const px = playerGroup.position.x;
-      playerGroup.position.x = px + (targetX - px) * Math.min(1, dt * 12);
+      playerGroup.position.x = px + (targetX - px) * Math.min(1, sdt * 12);
       playerGroup.rotation.z = -(targetX - px) * 0.22; // bankala
       playerGroup.position.y = 0.6 + Math.abs(Math.sin(t * 6)) * 0.12;
       engineMat.emissiveIntensity = boostActive
         ? 2.6 + Math.sin(t * 30) * 0.6
         : 1.2 + Math.sin(t * 12) * 0.15;
+
+      /* engine trail */
+      trailTimer += sdt;
+      if (trailTimer > (boostActive ? 0.016 : 0.028)) {
+        trailTimer = 0;
+        emitTrail(boostActive);
+      }
+      for (const tp of trailPool) {
+        if (!tp.mesh.visible) continue;
+        tp.life -= sdt;
+        if (tp.life <= 0) {
+          tp.mesh.visible = false;
+          continue;
+        }
+        tp.mesh.position.z += eff * sdt;
+        tp.mesh.scale.setScalar((tp.life / tp.maxLife) * tp.size);
+      }
 
       /* speed FOV kick — boost'ta ekstra genişler, "uçuş" hissi */
       const fovTarget =
@@ -625,7 +699,7 @@ export function createGame(
       grid.position.z = -(distance % CELL);
       const arr = starGeo.attributes.position.array as Float32Array;
       for (let i = 0; i < starCount; i++) {
-        arr[i * 3 + 2] += eff * dt * (boostActive ? 1.1 : 0.6);
+        arr[i * 3 + 2] += eff * sdt * (boostActive ? 1.1 : 0.6);
         if (arr[i * 3 + 2] > DESPAWN_Z) arr[i * 3 + 2] = -90;
       }
       starGeo.attributes.position.needsUpdate = true;
@@ -635,7 +709,7 @@ export function createGame(
 
       /* ambient spaceships cruising across the scene */
       for (const s of ambientShips) {
-        s.group.position.x += s.vx * dt;
+        s.group.position.x += s.vx * sdt;
         s.group.position.y = s.baseY + Math.sin(t * 0.8 + s.phase) * 0.6;
         s.group.rotation.z = Math.sin(t * 0.5 + s.phase) * 0.08;
         if (Math.abs(s.group.position.x) > 42) {
@@ -663,8 +737,8 @@ export function createGame(
       /* asteroids */
       for (const o of obstacles) {
         if (!o.active) continue;
-        o.mesh.position.z += eff * dt;
-        o.mesh.rotation.y += dt * 1.5;
+        o.mesh.position.z += eff * sdt;
+        o.mesh.rotation.y += sdt * 1.5;
         if (o.mesh.position.z > DESPAWN_Z) {
           o.active = false;
           o.mesh.position.z = SPAWN_Z;
@@ -674,14 +748,28 @@ export function createGame(
         const dz = Math.abs(o.mesh.position.z - playerGroup.position.z);
         const dx = Math.abs(o.mesh.position.x - playerGroup.position.x);
         const hitRadius = o.mesh.scale.x > 1.2 ? 1.5 : 0.95;
-        if (dz < hitRadius && dx < hitRadius) crash();
+        if (dz < hitRadius && dx < hitRadius) {
+          crash();
+          continue;
+        }
+        /* near-miss: geminin hemen yanından geçmek bonus + bullet-time */
+        if (!o.counted && o.mesh.position.z > playerGroup.position.z + 1.2) {
+          o.counted = true;
+          if (dx < 1.75) {
+            nearMisses++;
+            score += 50;
+            slowmo = 0.3;
+            sfx.nearMiss();
+            hooks.onPopup?.("⚠ CLOSE +50");
+          }
+        }
       }
 
       /* coins */
       for (const c of coins) {
         if (!c.active) continue;
         const mesh = c.mesh;
-        mesh.position.z += eff * dt;
+        mesh.position.z += eff * sdt;
         mesh.rotation.y += dt * 4;
         mesh.position.y = 0.6 + Math.sin(t * 5 + mesh.position.z) * 0.1;
         if (mesh.position.z > DESPAWN_Z) {
@@ -695,15 +783,18 @@ export function createGame(
           c.active = false;
           mesh.position.z = SPAWN_Z;
           coinsCollected++;
-          score += COIN_VALUE;
-          sfx.coin();
+          comboTimer = 2.5;
+          combo = Math.min(8, combo + 1);
+          score += COIN_VALUE * combo;
+          sfx.coin(combo);
+          hooks.onPopup?.(combo > 1 ? `COMBO x${combo}` : `+${COIN_VALUE}`);
         }
       }
 
       /* pillars */
       for (const p of pillars) {
         if (!p.visible) continue;
-        p.position.z += eff * dt;
+        p.position.z += eff * sdt;
         if (p.position.z > DESPAWN_Z) p.visible = false;
       }
 
@@ -711,11 +802,17 @@ export function createGame(
       scoreTick += dt;
       if (scoreTick > 0.1) {
         scoreTick = 0;
-        hooks.onBoost?.(boostMeter);
+        hooks.onBoost?.(boostMeter, boostActive);
         const s = Math.floor(score);
         if (s !== lastReported) {
           lastReported = s;
           hooks.onScore?.(s);
+        }
+        /* rekor canlı geçilince tek seferlik kutlama */
+        if (!bestBeaten && hooks.best && hooks.best > 0 && s > hooks.best) {
+          bestBeaten = true;
+          hooks.onPopup?.("🏆 NEW BEST!");
+          sfx.best();
         }
       }
     } else {
@@ -731,7 +828,11 @@ export function createGame(
         if (s.mesh.position.y < -1) s.mesh.visible = false;
       }
       if (crashTimer > 0.55) {
-        hooks.onGameOver?.(Math.floor(score));
+        hooks.onGameOver?.(Math.floor(score), {
+          coins: coinsCollected,
+          nearMisses,
+          distance: Math.floor(distance),
+        });
         return; // stops RAF; StageCanvas handles restart
       }
     }
@@ -776,6 +877,8 @@ export function createGame(
       engineMat.dispose();
       shipHullGeo.dispose();
       for (const m of shipMats) m.dispose();
+      trailGeo.dispose();
+      trailMat.dispose();
       asteroidGeo.dispose();
       asteroidMat.dispose();
       asteroidEdgeGeo.dispose();

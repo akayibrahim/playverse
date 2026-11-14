@@ -5,8 +5,13 @@ import { submitScore, getBestScore } from "@/lib/storage";
 
 type GameHooks = {
   onScore: (score: number) => void;
-  onGameOver: (score: number) => void;
-  onBoost?: (meter: number) => void;
+  onGameOver: (
+    score: number,
+    stats: { coins: number; nearMisses: number; distance: number },
+  ) => void;
+  onBoost?: (meter: number, active: boolean) => void;
+  onPopup?: (text: string) => void;
+  best?: number;
 };
 type GameInstance = { dispose: () => void };
 type GameModule = {
@@ -24,6 +29,10 @@ export default function StageCanvas({ slug }: { slug: string }) {
   const [best, setBest] = useState(0);
   const [gameOver, setGameOver] = useState(false);
   const [boost, setBoost] = useState(1);
+  const [boosting, setBoosting] = useState(false);
+  const [stats, setStats] = useState({ coins: 0, nearMisses: 0, distance: 0 });
+  const [popups, setPopups] = useState<{ id: number; text: string }[]>([]);
+  const popupId = useRef(0);
   const [runId, setRunId] = useState(0);
 
   useEffect(() => {
@@ -33,18 +42,33 @@ export default function StageCanvas({ slug }: { slug: string }) {
     setGameOver(false);
     setScore(0);
     setBoost(1);
-    setBest(getBestScore(slug));
+    setBoosting(false);
+    setStats({ coins: 0, nearMisses: 0, distance: 0 });
+    setPopups([]);
+    const startBest = getBestScore(slug);
+    setBest(startBest);
 
     import(`@/games/${slug}`)
       .then((mod: GameModule) => {
         if (cancelled || !containerRef.current) return;
         instance = mod.createGame(containerRef.current, {
+          best: startBest,
           onScore: (s) => setScore(s),
-          onBoost: (m) => setBoost(m),
-          onGameOver: (final) => {
-            // submitScore yeni rekorsa onu döndürür
+          onBoost: (m, active) => {
+            setBoost(m);
+            setBoosting(active);
+          },
+          onPopup: (text) => {
+            const id = ++popupId.current;
+            setPopups((p) => [...p.slice(-3), { id, text }]);
+            window.setTimeout(() => {
+              setPopups((p) => p.filter((x) => x.id !== id));
+            }, 1100);
+          },
+          onGameOver: (final, runStats) => {
             const recorded = submitScore(slug, final);
             setBest(recorded);
+            setStats(runStats);
             setGameOver(true);
           },
         });
@@ -85,15 +109,43 @@ export default function StageCanvas({ slug }: { slug: string }) {
           h-[60vh] min-h-[380px] relative"
       />
 
+      {/* Boost vignette + popup katmanı */}
+      <div
+        className="absolute inset-0 rounded-2xl pointer-events-none"
+        style={{
+          boxShadow: `inset 0 0 90px rgba(0,224,255,${
+            boosting ? 0.35 : 0
+          })`,
+          transition: "box-shadow 0.25s ease",
+        }}
+      />
+      <div className="absolute inset-x-0 top-10 flex flex-col items-center gap-1 pointer-events-none z-10">
+        {popups.map((p) => (
+          <span
+            key={p.id}
+            className="popup-float text-lg font-bold text-cyan-200
+              [text-shadow:0_0_12px_rgba(0,224,255,0.8)]"
+          >
+            {p.text}
+          </span>
+        ))}
+      </div>
+
       {/* Game over ekranı */}
       {gameOver && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center
-            gap-4 bg-[#05060f]/80 backdrop-blur-sm rounded-2xl"
+            gap-3 bg-[#05060f]/80 backdrop-blur-sm rounded-2xl gameover-flash"
         >
           <p className="text-white/60 text-sm">You crashed!</p>
           <p className="text-4xl font-bold neon-text">
             {score.toLocaleString("en-US")}
+          </p>
+          <p className="text-white/50 text-xs">
+            🪙 {stats.coins} coins · ⚠ {stats.nearMisses} close calls ·{" "}
+            {stats.distance >= 1000
+              ? `${(stats.distance / 1000).toFixed(1)} km`
+              : `${stats.distance} m`}
           </p>
           {score >= best && score > 0 && (
             <p className="text-cyan-300 text-sm">🏆 New best!</p>
