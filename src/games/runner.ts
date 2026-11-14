@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
@@ -115,6 +117,12 @@ export function createGame(
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
 
+  /* PBR environment: metal/parlak yüzeylere gerçek yansımalar */
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.environment = envTex;
+  pmrem.dispose();
+
   /* lights */
   scene.add(new THREE.AmbientLight(0x334466, 1.4));
   const key = new THREE.PointLight(0x7c5cff, 60, 60);
@@ -131,13 +139,26 @@ export function createGame(
   const groundGeo = new THREE.PlaneGeometry(220, 220);
   const groundMat = new THREE.MeshStandardMaterial({
     color: 0x0a0d22,
-    roughness: 0.35,
-    metalness: 0.75,
+    roughness: 0.25,
+    metalness: 0.85,
   });
   const ground = new THREE.Mesh(groundGeo, groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -1.05;
   scene.add(ground);
+
+  /* glowing lane edge strips */
+  const stripGeo = new THREE.BoxGeometry(0.12, 0.06, 140);
+  const stripMat = new THREE.MeshStandardMaterial({
+    color: 0x00e0ff,
+    emissive: 0x00e0ff,
+    emissiveIntensity: 2.2,
+  });
+  for (const x of [-3.3, 3.3]) {
+    const strip = new THREE.Mesh(stripGeo, stripMat);
+    strip.position.set(x, -0.93, -50);
+    scene.add(strip);
+  }
 
   /* background planet (static, slowly rotating) */
   const planetGeo = new THREE.IcosahedronGeometry(5, 1);
@@ -151,6 +172,19 @@ export function createGame(
   planet.position.set(11, 10, -68);
   scene.add(planet);
 
+  /* atmosfer halesi */
+  const atmoGeo = new THREE.SphereGeometry(5.9, 32, 32);
+  const atmoMat = new THREE.MeshBasicMaterial({
+    color: 0x7c5cff,
+    transparent: true,
+    opacity: 0.12,
+    side: THREE.BackSide,
+    blending: THREE.AdditiveBlending,
+  });
+  const atmo = new THREE.Mesh(atmoGeo, atmoMat);
+  atmo.position.copy(planet.position);
+  scene.add(atmo);
+
   /* player spaceship */
   const playerGroup = new THREE.Group();
   const playerMat = new THREE.MeshStandardMaterial({
@@ -162,7 +196,6 @@ export function createGame(
   const bodyGeo = new THREE.ConeGeometry(0.32, 1.5, 6);
   const body = new THREE.Mesh(bodyGeo, playerMat);
   body.rotation.x = -Math.PI / 2; // burun -z yönüne bakar
-  playerGroup.add(body);
 
   const wingGeo = new THREE.BoxGeometry(1.5, 0.08, 0.55);
   const wingMat = new THREE.MeshStandardMaterial({
@@ -174,7 +207,6 @@ export function createGame(
   });
   const wings = new THREE.Mesh(wingGeo, wingMat);
   wings.position.z = 0.35;
-  playerGroup.add(wings);
 
   const engineGeo = new THREE.SphereGeometry(0.16, 12, 12);
   const engineMat = new THREE.MeshStandardMaterial({
@@ -184,12 +216,55 @@ export function createGame(
   });
   const engine = new THREE.Mesh(engineGeo, engineMat);
   engine.position.z = 0.85;
-  playerGroup.add(engine);
+
+  const shipVisual = new THREE.Group(); // fallback (model yüklenene kadar)
+  shipVisual.add(body, wings, engine);
+  playerGroup.add(shipVisual);
 
   const playerGlow = new THREE.PointLight(0x00e0ff, 12, 8);
   playerGroup.add(playerGlow);
   playerGroup.position.set(0, 0.6, 0);
   scene.add(playerGroup);
+
+  /* gerçek gemi modeli (CC0 — Quaternius) */
+  function mountModel(
+    target: THREE.Group,
+    url: string,
+    sizeTarget: number,
+    fallback: THREE.Object3D | null,
+    orientation: "forward" | "east" | "west" = "forward",
+  ) {
+    new GLTFLoader().load(
+      url,
+      (gltf) => {
+        if (disposed) return;
+        const model = gltf.scene;
+        model.traverse((o) => {
+          const mesh = o as THREE.Mesh;
+          if (mesh.isMesh) {
+            const mat = mesh.material as THREE.MeshStandardMaterial;
+            if (mat && !Array.isArray(mat)) mat.envMapIntensity = 1.2;
+          }
+        });
+        const box = new THREE.Box3().setFromObject(model);
+        const size = box.getSize(new THREE.Vector3());
+        model.scale.setScalar(sizeTarget / Math.max(size.x, size.y, size.z));
+        // burun: forward → -z, east → +x, west → -x
+        model.rotation.y =
+          orientation === "forward" ? Math.PI : orientation === "east" ? -Math.PI / 2 : Math.PI / 2;
+        box.setFromObject(model);
+        const center = box.getCenter(new THREE.Vector3());
+        model.position.sub(center);
+        target.add(model);
+        if (fallback) fallback.visible = false;
+      },
+      undefined,
+      () => {
+        /* model yüklenemezse prosedürel fallback kalmaya devam eder */
+      },
+    );
+  }
+  mountModel(playerGroup, "/models/Spitfire.glb", 1.7, shipVisual);
 
   /* stars */
   const starCount = 220;
@@ -210,14 +285,33 @@ export function createGame(
   const stars = new THREE.Points(starGeo, starMat);
   scene.add(stars);
 
-  /* asteroids (pooled) */
+  /* asteroids (pooled) — displaced icosahedron = gerçek kayalık görünüm */
   const obstacles: { mesh: THREE.Mesh; active: boolean }[] = [];
-  const asteroidGeo = new THREE.IcosahedronGeometry(0.85, 0);
+  const asteroidGeo = new THREE.IcosahedronGeometry(0.85, 2);
+  {
+    const pos = asteroidGeo.attributes
+      .position as THREE.BufferAttribute;
+    const v = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).normalize();
+      const noise =
+        0.78 +
+        0.22 *
+          Math.abs(
+            Math.sin(v.x * 3.1) * Math.sin(v.y * 2.3) * Math.sin(v.z * 3.7),
+          ) +
+        0.08 * Math.sin(v.y * 7);
+      v.multiplyScalar(0.85 * noise);
+      pos.setXYZ(i, v.x, v.y, v.z);
+    }
+    asteroidGeo.computeVertexNormals();
+  }
   const asteroidMat = new THREE.MeshStandardMaterial({
     color: 0xff2d95,
     emissive: 0xff2d95,
-    emissiveIntensity: 0.35,
-    flatShading: true,
+    emissiveIntensity: 0.4,
+    roughness: 0.55,
+    metalness: 0.3,
   });
   const asteroidEdgeGeo = new THREE.EdgesGeometry(asteroidGeo, 1);
   const asteroidEdgeMat = new THREE.LineBasicMaterial({ color: 0xff8ac6 });
@@ -255,14 +349,15 @@ export function createGame(
     lastClosedLanes = closed;
   }
 
-  /* coins (pooled) */
+  /* coins (pooled) — klasik arcade altın halkası */
   const coins: { mesh: THREE.Mesh; active: boolean }[] = [];
-  const coinGeo = new THREE.OctahedronGeometry(0.28, 0);
+  const coinGeo = new THREE.TorusGeometry(0.3, 0.11, 12, 28);
   const coinMat = new THREE.MeshStandardMaterial({
     color: 0xffc94d,
     emissive: 0xffc94d,
     emissiveIntensity: 1.4,
-    flatShading: true,
+    metalness: 0.9,
+    roughness: 0.25,
   });
 
   function spawnCoinRun() {
@@ -316,6 +411,7 @@ export function createGame(
   const ambientShips: AmbientShip[] = [];
   const shipHullGeo = new THREE.ConeGeometry(0.5, 2.4, 5);
   const shipColors = [0x00e0ff, 0xff2d95, 0x7c5cff];
+  const shipModels = ["Zenith", "Striker", "Imperial"];
   const shipMats: THREE.MeshStandardMaterial[] = [];
   for (let i = 0; i < 3; i++) {
     const mat = new THREE.MeshStandardMaterial({
@@ -345,6 +441,14 @@ export function createGame(
       baseY,
       phase: Math.random() * 10,
     });
+    // gerçek gemi modeli (fallback koni gizlenir)
+    mountModel(
+      g,
+      `/models/${shipModels[i]}.glb`,
+      2.6,
+      hull,
+      dir > 0 ? "east" : "west",
+    );
   }
 
   /* crash particles */
@@ -690,7 +794,24 @@ export function createGame(
       }
       groundGeo.dispose();
       groundMat.dispose();
+      stripGeo.dispose();
+      stripMat.dispose();
+      atmoGeo.dispose();
+      atmoMat.dispose();
       grid.dispose();
+      // yüklenen GLB dahil sahnede kalan tüm mesh kaynaklarını serbest bırak
+      scene.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.geometry?.dispose?.();
+          const mats = Array.isArray(mesh.material)
+            ? mesh.material
+            : [mesh.material];
+          for (const m of mats) {
+            (m as THREE.Material | null)?.dispose?.();
+          }
+        }
+      });
       composer.dispose();
       renderer.dispose();
       renderer.domElement.remove();
