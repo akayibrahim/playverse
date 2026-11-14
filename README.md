@@ -1,36 +1,48 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Playverse
 
-## Getting Started
+Mobil ve web'de tarayıcı üzerinden oynanan, basit ama görsel olarak etkili 3D mini oyunlar sitesi.
 
-First, run the development server:
+## Stack
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- **Next.js (App Router) + TypeScript + Tailwind** — Vercel'e tek komutla deploy
+- **three.js** — 3D oyun motoru
+- **Skor / favoriler** — Faz 1'de tamamen `localStorage` (DB yok); Faz 2'de leaderboard için Neon Postgres veya Upstash eklenecek
+
+## Yapı
+
+```
+src/
+  app/
+    page.tsx              # Oyun hub'ı (kartlar, favoriler, en iyi skorlar)
+    games/[slug]/page.tsx # Oyun sayfası
+  components/
+    GameGrid.tsx          # Hub kartları (client, favoriler + skorlar)
+    GameStage.tsx         # SSR'siz sahne yükleyici
+    StageCanvas.tsx       # Ortak canvas + HUD + skor yönetimi
+  games/
+    runner.ts             # Oyun modülü: createGame(container) => { dispose }
+  lib/
+    games.ts              # Oyun kayıt defteri (yeni oyun buraya eklenir)
+    storage.ts            # localStorage: skor, favori, nickname
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Yeni oyun ekleme
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. `src/games/<slug>.ts` yaz — imza: `createGame(container: HTMLElement) => { dispose(): void }`
+2. `src/lib/games.ts`'e meta ekle (`status: "live"` yap)
+3. Kart ve sayfa otomatik çalışır
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Komutlar
 
-## Learn More
+```bash
+npm run dev    # geliştirme
+npm run build  # prod build
+npx vercel     # deploy
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Yol haritası
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- [x] İskelet: hub + oyun sayfası + storage modülü + logo
+- [ ] Neon Runner: gerçek oyun mekaniği (swipe ile şerit değiştirme, çarpışma, skor)
+- [ ] Leaderboard (Neon Postgres + `/api/scores`)
+- [ ] Admin mini-dashboard (istatistik, tek kullanıcılı auth)
