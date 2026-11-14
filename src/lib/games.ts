@@ -16,7 +16,7 @@ export const GAMES: GameMeta[] = [
   {
     slug: "runner",
     title: "Neon Runner",
-    tagline: "Sonsuz pistte koş, şerit değiştir, asteroidlerden kaç.",
+    tagline: "Run the endless neon track — swipe between lanes, dodge asteroids.",
     emoji: "🏃",
     gradient: "from-violet-500/60 to-cyan-400/60",
     status: "live",
@@ -24,7 +24,7 @@ export const GAMES: GameMeta[] = [
   {
     slug: "orbiter",
     title: "Orbiter",
-    tagline: "Yerçekimini kullan, yörüngede kal, en uzağa git.",
+    tagline: "Play with gravity, stay in orbit, go as far as you can.",
     emoji: "🪐",
     gradient: "from-cyan-400/60 to-emerald-400/60",
     status: "soon",
@@ -32,7 +32,7 @@ export const GAMES: GameMeta[] = [
   {
     slug: "stacker",
     title: "Stack Tower",
-    tagline: "Tek dokunuşla bloğu bırak, kuleyi dik.",
+    tagline: "One tap to drop the block — stack the perfect tower.",
     emoji: "🧱",
     gradient: "from-fuchsia-500/60 to-violet-500/60",
     status: "soon",

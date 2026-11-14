@@ -1,12 +1,13 @@
 import * as THREE from "three";
 
 /**
- * Neon Runner — oynanabilir demo (v0.2).
- * 3 şerit, swipe/dokunma + ok tuşları, asteroidler, artan hız, skor.
+ * Neon Runner — v1.0 (full game).
+ * 3 lanes · swipe / arrow keys · asteroids · coins · rising speed
+ * WebAudio SFX (no assets) · crash particles · background planet
  *
- * İmza korunacak:
+ * Contract (keep):
  *   createGame(container, hooks) => { dispose() }
- * hooks: { onScore(s), onGameOver(s) } — StageCanvas HUD'a bağlar.
+ *   hooks: { onScore(s), onGameOver(s) }
  */
 
 export type RunnerHooks = {
@@ -18,10 +19,62 @@ const LANE_X = [-2.2, 0, 2.2];
 const PLAYER_RADIUS = 0.45;
 const SPAWN_Z = -70;
 const DESPAWN_Z = 12;
-const BASE_SPEED = 14; // birim/sn
-const MAX_SPEED = 42;
-const ACCEL = 0.4; // birim/sn²
-const SCORE_RATE = 10; // skor / birim
+const BASE_SPEED = 14;
+const MAX_SPEED = 44;
+const ACCEL = 0.35;
+const COIN_VALUE = 50;
+
+/* ---------- audio (tiny synth, zero assets) ---------- */
+
+let audioCtx: AudioContext | null = null;
+
+function ensureAudio() {
+  try {
+    if (!audioCtx) {
+      const Ctor =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
+      if (!Ctor) return;
+      audioCtx = new Ctor();
+    }
+    if (audioCtx.state === "suspended") void audioCtx.resume();
+  } catch {
+    /* audio optional */
+  }
+}
+
+function tone(
+  freq: number,
+  dur: number,
+  type: OscillatorType,
+  vol: number,
+  slideTo?: number,
+) {
+  if (!audioCtx || audioCtx.state !== "running") return;
+  const t0 = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, t0 + dur);
+  gain.gain.setValueAtTime(vol, t0);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.02);
+}
+
+const sfx = {
+  coin: () => tone(880, 0.12, "square", 0.12, 1320),
+  move: () => tone(340, 0.08, "sine", 0.08, 180),
+  crash: () => {
+    tone(220, 0.5, "sawtooth", 0.25, 40);
+    tone(90, 0.6, "triangle", 0.2, 30);
+  },
+};
+
+/* ---------- game ---------- */
 
 export function createGame(
   container: HTMLElement,
@@ -29,8 +82,6 @@ export function createGame(
 ): { dispose: () => void } {
   const width = container.clientWidth;
   const height = container.clientHeight;
-
-  /* ---------- renderer / sahne / kamera ---------- */
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -41,27 +92,36 @@ export function createGame(
   const scene = new THREE.Scene();
   scene.fog = new THREE.Fog(0x05060f, 14, 75);
 
-  const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 120);
+  const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 150);
   const CAM_POS = new THREE.Vector3(0, 4.4, 8.5);
   camera.position.copy(CAM_POS);
   camera.lookAt(0, 0.8, -6);
 
-  /* ---------- ışıklar ---------- */
-
+  /* lights */
   scene.add(new THREE.AmbientLight(0x334466, 1.4));
   const key = new THREE.PointLight(0x7c5cff, 60, 60);
   key.position.set(4, 8, 6);
   scene.add(key);
 
-  /* ---------- sonsuz neon ızgara ---------- */
-
+  /* endless neon grid */
   const CELL = 2;
   const grid = new THREE.GridHelper(140, 70, 0x7c5cff, 0x2a2f55);
   grid.position.y = -1;
   scene.add(grid);
 
-  /* ---------- oyuncu ---------- */
+  /* background planet (static, slowly rotating) */
+  const planetGeo = new THREE.IcosahedronGeometry(5, 1);
+  const planetMat = new THREE.MeshBasicMaterial({
+    color: 0x7c5cff,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.25,
+  });
+  const planet = new THREE.Mesh(planetGeo, planetMat);
+  planet.position.set(11, 10, -68);
+  scene.add(planet);
 
+  /* player */
   const playerGroup = new THREE.Group();
   const playerGeo = new THREE.IcosahedronGeometry(PLAYER_RADIUS, 1);
   const playerMat = new THREE.MeshStandardMaterial({
@@ -77,65 +137,7 @@ export function createGame(
   playerGroup.position.set(0, 0.6, 0);
   scene.add(playerGroup);
 
-  /* ---------- asteroid havuzu ---------- */
-
-  const obstacles: {
-    mesh: THREE.Mesh;
-    lanes: Set<number>;
-    active: boolean;
-  }[] = [];
-
-  const asteroidGeo = new THREE.IcosahedronGeometry(0.85, 0);
-  const asteroidMat = new THREE.MeshStandardMaterial({
-    color: 0xff2d95,
-    emissive: 0xff2d95,
-    emissiveIntensity: 0.35,
-    flatShading: true,
-  });
-  const asteroidEdgeGeo = new THREE.EdgesGeometry(asteroidGeo, 1);
-
-  function spawnObstacle() {
-    const activeCount = obstacles.filter((o) => o.active).length;
-    const mesh =
-      obstacles.find((o) => !o.active)?.mesh ??
-      (() => {
-        const m = new THREE.Mesh(asteroidGeo, asteroidMat);
-        const edges = new THREE.LineSegments(
-          asteroidEdgeGeo,
-          new THREE.LineBasicMaterial({ color: 0xff8ac6 }),
-        );
-        m.add(edges);
-        scene.add(m);
-        return m;
-      })();
-
-    // Zorluk arttıkça bazen 2 şerit kapanır (hep 1 açık kalır)
-    const closedLanes =
-      speed > BASE_SPEED + 6 && Math.random() < 0.35 ? 2 : 1;
-    const open = Math.floor(Math.random() * 3);
-    const lanes = new Set<number>(
-      [0, 1, 2].filter((l) => l !== open).slice(0, closedLanes),
-    );
-
-    const x = [...lanes].map((l) => LANE_X[l]);
-    mesh.position.set(
-      x.length === 2 ? (x[0] + x[1]) / 2 : x[0],
-      0.6,
-      SPAWN_Z,
-    );
-    mesh.scale.setScalar(x.length === 2 ? 1.6 : 1);
-
-    const entry = obstacles.find((o) => o.mesh === mesh);
-    if (entry) {
-      entry.active = true;
-      entry.lanes = lanes;
-    } else {
-      obstacles.push({ mesh, lanes, active: true });
-    }
-  }
-
-  /* ---------- yıldız tozu ---------- */
-
+  /* stars */
   const starCount = 220;
   const starPos = new Float32Array(starCount * 3);
   for (let i = 0; i < starCount; i++) {
@@ -154,26 +156,161 @@ export function createGame(
   const stars = new THREE.Points(starGeo, starMat);
   scene.add(stars);
 
-  /* ---------- durum ---------- */
+  /* asteroids (pooled) */
+  const obstacles: { mesh: THREE.Mesh; active: boolean }[] = [];
+  const asteroidGeo = new THREE.IcosahedronGeometry(0.85, 0);
+  const asteroidMat = new THREE.MeshStandardMaterial({
+    color: 0xff2d95,
+    emissive: 0xff2d95,
+    emissiveIntensity: 0.35,
+    flatShading: true,
+  });
+  const asteroidEdgeGeo = new THREE.EdgesGeometry(asteroidGeo, 1);
+  const asteroidEdgeMat = new THREE.LineBasicMaterial({ color: 0xff8ac6 });
 
+  function makeObstacleMesh(): THREE.Mesh {
+    const m = new THREE.Mesh(asteroidGeo, asteroidMat);
+    m.add(
+      new THREE.LineSegments(asteroidEdgeGeo, asteroidEdgeMat),
+    );
+    scene.add(m);
+    return m;
+  }
+
+  function spawnObstacle() {
+    let entry = obstacles.find((o) => !o.active);
+    if (!entry) {
+      entry = { mesh: makeObstacleMesh(), active: true };
+      obstacles.push(entry);
+    }
+    const mesh = entry.mesh;
+
+    // difficulty: sometimes close 2 lanes (always leave 1 open)
+    const closedLanes = speed > BASE_SPEED + 6 && Math.random() < 0.35 ? 2 : 1;
+    const open = Math.floor(Math.random() * 3);
+    const closed = [0, 1, 2].filter((l) => l !== open).slice(0, closedLanes);
+
+    mesh.position.set(
+      closed.length === 2 ? (LANE_X[closed[0]] + LANE_X[closed[1]]) / 2 : LANE_X[closed[0]],
+      0.6,
+      SPAWN_Z,
+    );
+    mesh.scale.setScalar(closed.length === 2 ? 1.6 : 1);
+    entry.active = true;
+    lastObstacleDist = distance;
+    lastClosedLanes = closed;
+  }
+
+  /* coins (pooled) */
+  const coins: { mesh: THREE.Mesh; active: boolean }[] = [];
+  const coinGeo = new THREE.OctahedronGeometry(0.28, 0);
+  const coinMat = new THREE.MeshStandardMaterial({
+    color: 0xffc94d,
+    emissive: 0xffc94d,
+    emissiveIntensity: 0.9,
+    flatShading: true,
+  });
+
+  function spawnCoinRun() {
+    // keep coin runs away from the obstacle that just spawned
+    const blocked = lastDistance - lastObstacleDist < 5 ? lastClosedLanes : [];
+    const open = [0, 1, 2].filter((l) => !blocked.includes(l));
+    if (open.length === 0) return;
+    const lane = open[Math.floor(Math.random() * open.length)];
+    const count = 3 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < count; i++) {
+      let entry = coins.find((c) => !c.active);
+      if (!entry) {
+        entry = { mesh: new THREE.Mesh(coinGeo, coinMat), active: false };
+        scene.add(entry.mesh);
+        coins.push(entry);
+      }
+      entry.mesh.position.set(LANE_X[lane], 0.6, SPAWN_Z - i * 2.2);
+      entry.mesh.scale.setScalar(1);
+      entry.active = true;
+    }
+  }
+
+  /* side pillars (decorative, speed sensation) */
+  const pillars: THREE.Mesh[] = [];
+  const pillarGeo = new THREE.BoxGeometry(0.25, 3.4, 0.25);
+  const pillarMat = new THREE.MeshStandardMaterial({
+    color: 0x00e0ff,
+    emissive: 0x00e0ff,
+    emissiveIntensity: 0.7,
+  });
+  function spawnPillars() {
+    for (const x of [-4.4, 4.4]) {
+      let p = pillars.find((m) => !m.visible);
+      if (!p) {
+        p = new THREE.Mesh(pillarGeo, pillarMat);
+        scene.add(p);
+        pillars.push(p);
+      }
+      p.position.set(x, 0.7, SPAWN_Z);
+      p.visible = true;
+    }
+  }
+
+  /* crash particles */
+  const shardCount = 26;
+  const shardGeo = new THREE.TetrahedronGeometry(0.16, 0);
+  const shards: { mesh: THREE.Mesh; vel: THREE.Vector3 }[] = [];
+  for (let i = 0; i < shardCount; i++) {
+    const mesh = new THREE.Mesh(
+      shardGeo,
+      new THREE.MeshStandardMaterial({
+        color: 0x00e0ff,
+        emissive: 0x00e0ff,
+        emissiveIntensity: 1.2,
+      }),
+    );
+    mesh.visible = false;
+    scene.add(mesh);
+    shards.push({ mesh, vel: new THREE.Vector3() });
+  }
+  function explode(pos: THREE.Vector3) {
+    for (const s of shards) {
+      s.mesh.position.copy(pos);
+      s.mesh.visible = true;
+      s.mesh.rotation.set(Math.random() * 3, Math.random() * 3, 0);
+      s.vel.set(
+        (Math.random() - 0.5) * 9,
+        Math.random() * 6 + 2,
+        (Math.random() - 0.5) * 9,
+      );
+    }
+  }
+
+  /* state */
   let targetLane = 1;
   let speed = BASE_SPEED;
   let distance = 0;
   let score = 0;
-  let nextSpawnAt = 10;
+  let coinsCollected = 0;
+  let nextObstacleAt = 12;
+  let nextCoinAt = 8;
+  let nextPillarAt = 0;
+  let lastObstacleDist = -100;
+  let lastClosedLanes: number[] = [];
+  let lastDistance = 0;
   let crashed = false;
   let crashTimer = 0;
   let scoreTick = 0;
   let lastReported = -1;
   let disposed = false;
 
-  /* ---------- girdi: swipe + klavye ---------- */
-
+  /* input: swipe + keys (+ first interaction unlocks audio) */
   let pointerStartX: number | null = null;
 
   function moveLane(dir: -1 | 1) {
     if (crashed) return;
-    targetLane = Math.max(0, Math.min(2, targetLane + dir));
+    const next = Math.max(0, Math.min(2, targetLane + dir));
+    if (next !== targetLane) {
+      targetLane = next;
+      ensureAudio();
+      sfx.move();
+    }
   }
 
   const onPointerDown = (e: PointerEvent) => {
@@ -194,56 +331,67 @@ export function createGame(
   renderer.domElement.addEventListener("pointerup", onPointerUp);
   window.addEventListener("keydown", onKey);
 
-  /* ---------- çarpışma & oyun sonu ---------- */
-
+  /* crash */
   function crash() {
+    if (crashed) return;
     crashed = true;
     crashTimer = 0;
-    playerMat.color.set(0xff2244);
-    playerMat.emissive.set(0xff2244);
+    ensureAudio();
+    sfx.crash();
+    explode(playerGroup.position);
+    playerGroup.visible = false;
   }
 
-  /* ---------- döngü ---------- */
-
+  /* loop */
   const clock = new THREE.Clock();
 
   function tick() {
     if (disposed) return;
     requestAnimationFrame(tick);
-    const dt = Math.min(clock.getDelta(), 0.05); // sekme değişiminde sıçramayı engelle
+    const dt = Math.min(clock.getDelta(), 0.05);
     const t = clock.getElapsedTime();
 
     if (!crashed) {
-      // hız & mesafe & skor
       speed = Math.min(MAX_SPEED, speed + ACCEL * dt);
       distance += speed * dt;
-      score += speed * dt * SCORE_RATE * 0.1;
+      lastDistance = distance;
+      score += speed * dt * 1.5;
 
-      // şerit geçişi (yumuşak)
+      /* player movement */
       const targetX = LANE_X[targetLane];
       const px = playerGroup.position.x;
       playerGroup.position.x = px + (targetX - px) * Math.min(1, dt * 12);
       playerMesh.rotation.z += dt * 3;
       playerMesh.rotation.x += dt * 1.2;
-      // hafif zıplama
       playerGroup.position.y = 0.6 + Math.abs(Math.sin(t * 6)) * 0.12;
 
-      // ızgara + yıldız akışı (sonsuz pist hissi)
+      /* track scroll */
       grid.position.z = -(distance % CELL);
-      starGeo.attributes.position.needsUpdate = true;
       const arr = starGeo.attributes.position.array as Float32Array;
       for (let i = 0; i < starCount; i++) {
         arr[i * 3 + 2] += speed * dt * 0.6;
         if (arr[i * 3 + 2] > DESPAWN_Z) arr[i * 3 + 2] = -90;
       }
+      starGeo.attributes.position.needsUpdate = true;
 
-      // asteroid spawn
-      if (distance >= nextSpawnAt) {
-        nextSpawnAt = distance + Math.max(7, 12 - speed * 0.08);
+      planet.rotation.y += dt * 0.08;
+      planet.rotation.x += dt * 0.03;
+
+      /* spawns */
+      if (distance >= nextObstacleAt) {
+        nextObstacleAt = distance + Math.max(7, 13 - speed * 0.09);
         spawnObstacle();
       }
+      if (distance >= nextCoinAt) {
+        nextCoinAt = distance + 10 + Math.random() * 8;
+        spawnCoinRun();
+      }
+      if (distance >= nextPillarAt) {
+        nextPillarAt = distance + 11;
+        spawnPillars();
+      }
 
-      // asteroid hareketi + çarpışma
+      /* asteroids */
       for (const o of obstacles) {
         if (!o.active) continue;
         o.mesh.position.z += speed * dt;
@@ -260,7 +408,37 @@ export function createGame(
         if (dz < hitRadius && dx < hitRadius) crash();
       }
 
-      // skor raporu (throttle ~10 Hz)
+      /* coins */
+      for (const c of coins) {
+        if (!c.active) continue;
+        const mesh = c.mesh;
+        mesh.position.z += speed * dt;
+        mesh.rotation.y += dt * 4;
+        mesh.position.y = 0.6 + Math.sin(t * 5 + mesh.position.z) * 0.1;
+        if (mesh.position.z > DESPAWN_Z) {
+          c.active = false;
+          mesh.position.z = SPAWN_Z;
+          continue;
+        }
+        const dz = Math.abs(mesh.position.z - playerGroup.position.z);
+        const dx = Math.abs(mesh.position.x - playerGroup.position.x);
+        if (dz < 0.9 && dx < 0.9) {
+          c.active = false;
+          mesh.position.z = SPAWN_Z;
+          coinsCollected++;
+          score += COIN_VALUE;
+          sfx.coin();
+        }
+      }
+
+      /* pillars */
+      for (const p of pillars) {
+        if (!p.visible) continue;
+        p.position.z += speed * dt;
+        if (p.position.z > DESPAWN_Z) p.visible = false;
+      }
+
+      /* score report ~10 Hz */
       scoreTick += dt;
       if (scoreTick > 0.1) {
         scoreTick = 0;
@@ -271,16 +449,24 @@ export function createGame(
         }
       }
     } else {
-      // çarpışma sonrası: kısa sarsıntı, sonra bitir
+      /* crash sequence: shake + shards fall, then finish */
       crashTimer += dt;
-      camera.position.x = CAM_POS.x + (Math.random() - 0.5) * crashTimer * 2;
-      if (crashTimer > 0.45) {
+      camera.position.x = CAM_POS.x + (Math.random() - 0.5) * crashTimer * 2.2;
+      for (const s of shards) {
+        if (!s.mesh.visible) continue;
+        s.vel.y -= 18 * dt;
+        s.mesh.position.addScaledVector(s.vel, dt);
+        s.mesh.rotation.x += dt * 8;
+        s.mesh.rotation.y += dt * 6;
+        if (s.mesh.position.y < -1) s.mesh.visible = false;
+      }
+      if (crashTimer > 0.55) {
         hooks.onGameOver?.(Math.floor(score));
-        return; // RAF durur; restart StageCanvas'ta
+        return; // stops RAF; StageCanvas handles restart
       }
     }
 
-    // kamera oyuncuyu yumuşak takip etsin
+    /* camera follows player softly */
     camera.position.x +=
       (playerGroup.position.x * 0.45 - camera.position.x) * Math.min(1, dt * 5);
 
@@ -288,8 +474,7 @@ export function createGame(
   }
   tick();
 
-  /* ---------- resize & temizlik ---------- */
-
+  /* resize & cleanup */
   const onResize = () => {
     if (disposed || !container.clientWidth) return;
     camera.aspect = container.clientWidth / container.clientHeight;
@@ -310,11 +495,23 @@ export function createGame(
       asteroidGeo.dispose();
       asteroidMat.dispose();
       asteroidEdgeGeo.dispose();
+      asteroidEdgeMat.dispose();
+      coinGeo.dispose();
+      coinMat.dispose();
+      pillarGeo.dispose();
+      pillarMat.dispose();
+      shardGeo.dispose();
       starGeo.dispose();
       starMat.dispose();
+      planetGeo.dispose();
+      planetMat.dispose();
+      for (const s of shards) {
+        (s.mesh.material as THREE.Material).dispose();
+      }
       grid.dispose();
       renderer.dispose();
       renderer.domElement.remove();
+      audioCtx = null;
     },
   };
 }

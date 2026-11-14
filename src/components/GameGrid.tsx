@@ -17,7 +17,7 @@ function FavoriteStar({ slug }: { slug: string }) {
   return (
     <button
       type="button"
-      aria-label={isFavorite ? "Favoriden çıkar" : "Favorilere ekle"}
+      aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
       onClick={(e) => {
         e.preventDefault();
         setFavorites(toggleFavorite(slug));
@@ -39,7 +39,7 @@ export function GameGrid() {
 
   return (
     <section
-      aria-label="Oyunlar"
+      aria-label="Games"
       className="grid grid-cols-1 sm:grid-cols-2 gap-4"
     >
       {GAMES.map((game) => (
@@ -64,13 +64,13 @@ export function GameGrid() {
             {game.status === "live" ? (
               bestScores[game.slug] ? (
                 <span className="text-cyan-300">
-                  🏆 En iyi: {bestScores[game.slug].toLocaleString("tr-TR")}
+                  🏆 Best: {bestScores[game.slug].toLocaleString("en-US")}
                 </span>
               ) : (
-                <span className="text-white/40">Oyna →</span>
+                <span className="text-white/40">Play →</span>
               )
             ) : (
-              <span className="text-white/40">Yakında…</span>
+              <span className="text-white/40">Coming soon…</span>
             )}
           </p>
         </Link>

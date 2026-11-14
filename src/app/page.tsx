@@ -18,8 +18,8 @@ export default function Home() {
           Play<span className="neon-text">verse</span>
         </h1>
         <p className="mt-3 text-sm sm:text-base text-white/60 max-w-md mx-auto">
-          Tarayıcıda çalışan, mobil dostu 3D mini oyunlar. Kurulum yok,
-          indirme yok — dokun ve oyna.
+          3D mini games that run in your browser. No install, no download —
+          just tap and play.
         </p>
       </header>
 
@@ -27,7 +27,7 @@ export default function Home() {
       <GameGrid />
 
       <footer className="mt-16 text-center text-xs text-white/30">
-        Playverse · skorların cihazında saklanır · v0.1
+        Playverse · your scores stay on your device · v0.1
       </footer>
     </main>
   );

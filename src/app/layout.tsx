@@ -14,11 +14,11 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "Playverse — tarayıcıda 3D mini oyunlar",
+    default: "Playverse — 3D mini games in your browser",
     template: "%s · Playverse",
   },
   description:
-    "Mobil ve web'de güzel vakit geçireceğin basit ama görsel olarak etkili 3D oyunlar.",
+    "Simple but visually striking 3D games you can play in your browser, on mobile and web.",
 };
 
 export const viewport: Viewport = {
@@ -32,7 +32,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
-      lang="tr"
+      lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">{children}</body>
