@@ -93,7 +93,7 @@ export function createGame(
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75)); // bloom ile perf dengesi
   renderer.setSize(width, height);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.15;
+  renderer.toneMappingExposure = 1.0;
   renderer.domElement.style.touchAction = "none";
   container.appendChild(renderer.domElement);
 
@@ -110,9 +110,9 @@ export function createGame(
   composer.addPass(new RenderPass(scene, camera));
   const bloom = new UnrealBloomPass(
     new THREE.Vector2(width, height),
-    0.85, // strength
-    0.55, // radius
-    0.15, // threshold — sadece parlak öğeler yayılır
+    0.45, // strength — 0.85'ten düşürüldü: gemi kayboluyordu
+    0.5, // radius
+    0.5, // threshold — sadece gerçekten parlak öğeler yayılır
   );
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
@@ -125,7 +125,7 @@ export function createGame(
 
   /* lights */
   scene.add(new THREE.AmbientLight(0x334466, 1.4));
-  const key = new THREE.PointLight(0x7c5cff, 60, 60);
+  const key = new THREE.PointLight(0x7c5cff, 40, 60);
   key.position.set(4, 8, 6);
   scene.add(key);
 
@@ -152,7 +152,7 @@ export function createGame(
   const stripMat = new THREE.MeshStandardMaterial({
     color: 0x00e0ff,
     emissive: 0x00e0ff,
-    emissiveIntensity: 2.2,
+    emissiveIntensity: 1.2,
   });
   for (const x of [-3.3, 3.3]) {
     const strip = new THREE.Mesh(stripGeo, stripMat);
@@ -221,7 +221,7 @@ export function createGame(
   shipVisual.add(body, wings, engine);
   playerGroup.add(shipVisual);
 
-  const playerGlow = new THREE.PointLight(0x00e0ff, 12, 8);
+  const playerGlow = new THREE.PointLight(0x00e0ff, 3.5, 6);
   playerGroup.add(playerGlow);
   playerGroup.position.set(0, 0.6, 0);
   scene.add(playerGroup);
