@@ -6,11 +6,16 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 
 /**
- * Ghost Range — v1.0 (full game).
+ * Ghost Range — v1.1 (upgraded).
  * Stylized-realistic dusk sniper range: 4 lanes (120/220/350/500 m),
- * pop-up silhouette targets, simplified-real ballistics (gravity drop +
- * wind drift — hold OVER at long range), zoomable scope with breath hold,
- * 5-round magazine with reload. 60-second round.
+ * pop-up HUMANOID targets (procedural low-poly characters: helmet, vest,
+ * camo uniform, elbow/knee joints — idle breathing, head turns, weight
+ * shifts; body hit = stagger then physical fall, head hit = instant
+ * crumple), simplified-real ballistics (gravity drop + wind drift —
+ * hold OVER at long range), mil-dot scope reticle, laser rangefinder
+ * ("R: 487m"), headshot slow-mo with zoom punch, zoomable scope with
+ * breath hold, muzzle smoke, rifle crack with echo. 5-round magazine
+ * with reload. 60-second round.
  *
  * Contract (keep):
  *   createGame(container, hooks) => { dispose() }
@@ -123,6 +128,9 @@ const sfx = {
     noiseBurst(0.07, 0.45, 3600); // muzzle crack
     noiseBurst(0.3, 0.3, 480, 0.01); // body
     tone(64, 0.28, "sine", 0.45, 30); // thump
+    // distant echo — vadiye çarpıp geri dönen daha sessiz ikinci patlama
+    noiseBurst(0.22, 0.16, 900, 0.35);
+    noiseBurst(0.45, 0.08, 320, 0.4);
   },
   bolt: () => {
     tone(1300, 0.03, "square", 0.1, undefined, 0.38); // click…
@@ -131,10 +139,24 @@ const sfx = {
     noiseBurst(0.04, 0.09, 2100, 0.52, "highpass");
   },
   empty: () => tone(320, 0.05, "square", 0.13, 210),
-  hit: () => tone(1250, 0.06, "square", 0.17, 900),
+  // gövde isabeti: metalik clang — hızlı pes düşen kare dalga
+  hit: () => {
+    tone(1250, 0.07, "square", 0.2, 430);
+    tone(2500, 0.05, "square", 0.07, 1400, 0.015);
+  },
+  // kafa isabeti: keskin tick + iki nota + yavaşlayan kuyruk
   headshot: () => {
+    tone(2400, 0.03, "square", 0.2, 1500);
     tone(880, 0.08, "square", 0.19);
     tone(1320, 0.12, "square", 0.19, undefined, 0.08);
+    tone(430, 0.6, "sine", 0.11, 90, 0.12); // slowed tail
+  },
+  // ıskalama ama hedefin 3m yakınından geçen mermi: whiz
+  whiz: () => tone(2600, 0.14, "sine", 0.15, 500),
+  // toprağa düşen mermi: uzak "thud"
+  thud: () => {
+    tone(95, 0.16, "sine", 0.15, 45);
+    noiseBurst(0.12, 0.1, 240);
   },
   streak: (n: number) => {
     const p = 520 + Math.min(8, n) * 55;
@@ -223,19 +245,33 @@ function makeSoftTexture(): THREE.Texture {
 
 /* ---------- game ---------- */
 
-type TargetState = "idle" | "rising" | "up" | "falling";
+type TargetState = "idle" | "rising" | "up" | "stagger" | "falling" | "sinking";
+type HitPart = "head" | "torso" | "arm" | "leg";
+type FallMode = "fall" | "crumple";
 
 type TargetObj = {
-  group: THREE.Group;
-  body: THREE.Mesh;
-  head: THREE.Mesh;
+  group: THREE.Group; // root — ayak tabanları pivot (y=0 zemin)
+  hips: THREE.Group;
+  torso: THREE.Group;
+  head: THREE.Group;
+  chest: THREE.Mesh;
+  arms: { g: THREE.Group; elbow: THREE.Group }[];
+  legs: { g: THREE.Group; knee: THREE.Group }[];
+  parts: THREE.Mesh[]; // raycast hit zones
+  mats: THREE.MeshStandardMaterial[]; // fade için
   state: TargetState;
   t: number;
   upTime: number;
   lane: number;
   dist: number;
-  tilt: number;
+  baseZ: number;
   fast: boolean;
+  fallMode: FallMode;
+  fallDir: number;
+  phase: number;
+  idleTimer: number;
+  headYaw: number;
+  shiftX: number;
 };
 
 export function createGame(
@@ -411,46 +447,207 @@ export function createGame(
     }
   }
 
-  /* pop-up humanoid silhouettes (kapsül gövde + küre kafa) */
-  const bodyGeo = new THREE.CapsuleGeometry(0.26, 1.1, 4, 12);
-  const headGeo = new THREE.SphereGeometry(0.15, 12, 10);
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: 0x2f3a1e,
-    emissive: 0x55641f,
-    emissiveIntensity: 0.3,
-    roughness: 0.9,
-  });
-  const headMat = new THREE.MeshStandardMaterial({
-    color: 0x3a4524,
-    emissive: 0x6a7a30,
-    emissiveIntensity: 0.55,
-    roughness: 0.9,
-  });
+  /* pop-up humanoid hedefler — tamamen prosedürel low-poly karakterler
+     (1.8m insan oranı; ortak geometriler, hedef başına camo rastgele ton) */
+  const rigGeo = {
+    head: new THREE.SphereGeometry(0.115, 14, 12),
+    helmet: new THREE.SphereGeometry(
+      0.14,
+      14,
+      8,
+      0,
+      Math.PI * 2,
+      0,
+      Math.PI * 0.55,
+    ),
+    neck: new THREE.CylinderGeometry(0.05, 0.06, 0.12, 8),
+    torso: new THREE.CylinderGeometry(0.19, 0.14, 0.52, 10),
+    pelvis: new THREE.BoxGeometry(0.3, 0.2, 0.17),
+    vest: new THREE.BoxGeometry(0.27, 0.3, 0.05),
+    upperArm: new THREE.CylinderGeometry(0.058, 0.05, 0.3, 8),
+    foreArm: new THREE.CylinderGeometry(0.05, 0.042, 0.28, 8),
+    hand: new THREE.BoxGeometry(0.08, 0.1, 0.05),
+    thigh: new THREE.CylinderGeometry(0.095, 0.08, 0.42, 8),
+    shin: new THREE.CylinderGeometry(0.072, 0.055, 0.42, 8),
+    boot: new THREE.BoxGeometry(0.12, 0.1, 0.26),
+  };
+
+  function makeTargetMats() {
+    const jitter = () => Math.random() - 0.5;
+    const std = (h: number, s: number, l: number) => {
+      const col = new THREE.Color().setHSL(
+        h + jitter() * 0.02,
+        Math.max(0.05, s + jitter() * 0.05),
+        Math.min(0.6, Math.max(0.06, l + jitter() * 0.05)),
+      );
+      return new THREE.MeshStandardMaterial({
+        color: col,
+        emissive: col.clone().multiplyScalar(0.4), // alacakaranlıkta okunurluk
+        emissiveIntensity: 0.28,
+        roughness: 0.85,
+        metalness: 0.05,
+        transparent: true, // sink fade
+      });
+    };
+    return {
+      uniform: std(0.19, 0.3, 0.3), // zeytin/khaki üniforma
+      pants: std(0.16, 0.18, 0.19), // koyu pantolon
+      skin: std(0.07, 0.4, 0.44), // ten
+      helmet: std(0.2, 0.26, 0.23),
+      vest: std(0.15, 0.2, 0.15),
+      boots: std(0.1, 0.12, 0.11),
+    };
+  }
+
   const targets: TargetObj[] = [];
+  const meshPart = (
+    geo: THREE.BufferGeometry,
+    mat: THREE.MeshStandardMaterial,
+    part: HitPart,
+  ) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.userData.part = part;
+    return m;
+  };
+
   for (let i = 0; i < 4; i++) {
-    const group = new THREE.Group();
-    const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.position.y = 0.81;
-    body.userData.part = "body";
-    const head = new THREE.Mesh(headGeo, headMat);
-    head.position.y = 1.74;
-    head.userData.part = "head";
-    group.add(body, head);
-    group.position.y = -2.4;
-    group.visible = false;
-    scene.add(group);
-    targets.push({
-      group,
-      body,
+    const mats = makeTargetMats();
+    const root = new THREE.Group();
+
+    // kalça bloğu + üst gövde hiyerarşisi
+    const hips = new THREE.Group();
+    hips.position.y = 1.0;
+    root.add(hips);
+    const pelvis = meshPart(rigGeo.pelvis, mats.pants, "torso");
+    pelvis.position.y = -0.02;
+    hips.add(pelvis);
+
+    const torso = new THREE.Group();
+    torso.position.y = 0.2; // dünya ~1.2
+    hips.add(torso);
+    const chest = meshPart(rigGeo.torso, mats.uniform, "torso");
+    chest.position.y = 0.06; // gövde 1.0–1.52 arası
+    torso.add(chest);
+    const vest = meshPart(rigGeo.vest, mats.vest, "torso");
+    vest.position.set(0, 0.12, 0.075); // göğüs önü vest şeridi
+    torso.add(vest);
+    const neck = meshPart(rigGeo.neck, mats.skin, "torso");
+    neck.position.y = 0.38;
+    torso.add(neck);
+
+    const head = new THREE.Group();
+    head.position.y = 0.47; // dünya ~1.67
+    torso.add(head);
+    const headMesh = meshPart(rigGeo.head, mats.skin, "head");
+    headMesh.position.y = 0.02;
+    head.add(headMesh);
+    const helmet = meshPart(rigGeo.helmet, mats.helmet, "head");
+    helmet.position.y = 0.045;
+    head.add(helmet);
+
+    // kollar — omuz pivotu + dirsek bükümü + el
+    const arms: TargetObj["arms"] = [];
+    for (let s = 0; s < 2; s++) {
+      const side = s === 0 ? -1 : 1;
+      const g = new THREE.Group();
+      g.position.set(side * 0.21, 0.26, 0);
+      g.rotation.z = side * 0.1;
+      const upper = meshPart(rigGeo.upperArm, mats.uniform, "arm");
+      upper.position.y = -0.15;
+      g.add(upper);
+      const elbow = new THREE.Group();
+      elbow.position.y = -0.3;
+      elbow.rotation.x = -0.35; // doğal dirsek bükümü (öne)
+      const fore = meshPart(rigGeo.foreArm, mats.uniform, "arm");
+      fore.position.y = -0.14;
+      elbow.add(fore);
+      const hand = meshPart(rigGeo.hand, mats.skin, "arm");
+      hand.position.y = -0.31;
+      elbow.add(hand);
+      g.add(elbow);
+      torso.add(g);
+      arms.push({ g, elbow });
+    }
+
+    // bacaklar — kalça pivotu + diz + bot (root'a bağlı: hips çöküşü etkilemez)
+    const legs: TargetObj["legs"] = [];
+    for (let s = 0; s < 2; s++) {
+      const side = s === 0 ? -1 : 1;
+      const g = new THREE.Group();
+      g.position.set(side * 0.1, 1.0, 0);
+      const thigh = meshPart(rigGeo.thigh, mats.pants, "leg");
+      thigh.position.y = -0.21;
+      g.add(thigh);
+      const knee = new THREE.Group();
+      knee.position.y = -0.42;
+      knee.rotation.x = 0.06;
+      const shin = meshPart(rigGeo.shin, mats.pants, "leg");
+      shin.position.y = -0.21;
+      knee.add(shin);
+      const boot = meshPart(rigGeo.boot, mats.boots, "leg");
+      boot.position.set(0, -0.44, 0.04);
+      knee.add(boot);
+      g.add(knee);
+      root.add(g);
+      legs.push({ g, knee });
+    }
+
+    root.position.y = -2.4;
+    root.visible = false;
+    scene.add(root);
+
+    const parts: THREE.Mesh[] = [headMesh, helmet, chest, vest, neck, pelvis];
+    for (const a of arms) {
+      for (const c of a.g.children) parts.push(c as THREE.Mesh);
+    }
+    for (const l of legs) {
+      for (const c of l.g.children) parts.push(c as THREE.Mesh);
+    }
+
+    const tg: TargetObj = {
+      group: root,
+      hips,
+      torso,
       head,
+      chest,
+      arms,
+      legs,
+      parts,
+      mats: Object.values(mats),
       state: "idle",
       t: 0,
       upTime: 4,
       lane: 0,
       dist: 120,
-      tilt: 0,
+      baseZ: -120,
       fast: false,
-    });
+      fallMode: "fall",
+      fallDir: -1,
+      phase: 0,
+      idleTimer: 2,
+      headYaw: 0,
+      shiftX: 0,
+    };
+    for (const p of parts) p.userData.tg = tg;
+    targets.push(tg);
+  }
+
+  function resetPose(tg: TargetObj) {
+    tg.group.rotation.set(0, 0, 0);
+    tg.hips.position.set(0, 1.0, 0);
+    tg.torso.rotation.set(0, 0, 0);
+    tg.head.rotation.set(0, 0, 0);
+    tg.chest.scale.set(1, 1, 1);
+    for (let i = 0; i < 2; i++) {
+      const side = i === 0 ? 1 : -1;
+      tg.arms[i].g.rotation.set(0, 0, side * 0.1);
+      tg.arms[i].elbow.rotation.set(-0.35, 0, 0);
+      tg.legs[i].g.rotation.set(0, 0, 0);
+      tg.legs[i].knee.rotation.set(0.06, 0, 0);
+    }
+    for (const m of tg.mats) m.opacity = 1;
+    tg.headYaw = 0;
+    tg.shiftX = 0;
   }
 
   function spawnTarget() {
@@ -468,17 +665,22 @@ export function createGame(
     }
     tg.lane = lane;
     tg.dist = LANE_DIST[lane];
+    tg.baseZ = -tg.dist;
     tg.group.position.set(
       (Math.random() * 2 - 1) * 25,
       -2.4,
-      -tg.dist,
+      tg.baseZ,
     );
-    tg.group.rotation.set(0, 0, 0);
+    resetPose(tg);
     tg.group.visible = true;
     tg.state = "rising";
     tg.t = 0;
     tg.upTime = 3 + Math.random() * 2;
     tg.fast = false;
+    tg.fallMode = "fall";
+    tg.fallDir = -1;
+    tg.phase = Math.random() * 10;
+    tg.idleTimer = 1.5 + Math.random() * 2;
   }
 
   /* tracers — namludan çarpma noktasına hızla solan parlak çizgi */
@@ -562,6 +764,43 @@ export function createGame(
   const flashLight = new THREE.PointLight(0xffb46a, 0, 22, 1.6);
   scene.add(flashLight);
 
+  /* muzzle smoke — namluda genişleyip solan additive sprite puff */
+  const smokePool: {
+    sprite: THREE.Sprite;
+    mat: THREE.SpriteMaterial;
+    life: number;
+    max: number;
+    size: number;
+    vy: number;
+  }[] = [];
+  for (let i = 0; i < 6; i++) {
+    const mat = new THREE.SpriteMaterial({
+      map: puffTex,
+      color: 0x9a948c,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.visible = false;
+    scene.add(sprite);
+    smokePool.push({ sprite, mat, life: 0, max: 0.55, size: 0.55, vy: 0.6 });
+  }
+  let smokeIdx = 0;
+
+  function spawnSmoke(pos: THREE.Vector3) {
+    const s = smokePool[smokeIdx % smokePool.length];
+    smokeIdx++;
+    s.sprite.position.copy(pos);
+    s.size = 0.5 + Math.random() * 0.25;
+    s.vy = 0.45 + Math.random() * 0.45;
+    s.max = 0.5 + Math.random() * 0.2;
+    s.life = s.max;
+    s.sprite.scale.setScalar(s.size * 0.4);
+    s.sprite.visible = true;
+  }
+
   /* ---------- state ---------- */
 
   let yaw = 0;
@@ -608,23 +847,53 @@ export function createGame(
   scopeEl.style.cssText =
     "position:absolute;inset:0;z-index:4;pointer-events:none;opacity:0;" +
     "transition:opacity 0.25s ease;user-select:none;-webkit-user-select:none";
+  /* lens blur ring — dairesel kesitin hemen içinde yumuşak koyu halka */
+  const lensBlur = document.createElement("div");
+  lensBlur.style.cssText =
+    "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);" +
+    "border-radius:50%;pointer-events:none";
   const scopeRing = document.createElement("div");
   scopeRing.style.cssText =
     "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);" +
     "border-radius:50%;border:2px solid rgba(215,235,255,0.16)";
+  /* ince tam çapraz — gerçek dürbünde olduğu gibi koyu hat */
   const crossH = document.createElement("div");
   crossH.style.cssText =
     "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);" +
-    "height:1px;background:rgba(200,255,225,0.5)";
+    "height:1px;background:rgba(6,10,8,0.78);" +
+    "box-shadow:0 0 0 1px rgba(200,255,225,0.1)";
   const crossV = document.createElement("div");
   crossV.style.cssText =
     "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);" +
-    "width:1px;background:rgba(200,255,225,0.5)";
+    "width:1px;background:rgba(6,10,8,0.78);" +
+    "box-shadow:0 0 0 1px rgba(200,255,225,0.1)";
+  /* kalın stangentlar — kenardan merkeze, klassik mil-dot post'ları */
+  const postT = document.createElement("div");
+  const postB = document.createElement("div");
+  const postL = document.createElement("div");
+  const postR = document.createElement("div");
+  for (const p of [postT, postB, postL, postR]) {
+    p.style.cssText =
+      "position:absolute;left:50%;top:50%;background:rgba(5,8,6,0.92);" +
+      "box-shadow:0 0 0 1px rgba(200,255,225,0.14)";
+  }
+  /* alt dikey hatta mil-dot'lar — zoom'a göre gerçek açısal aralık */
+  const reticleDots: HTMLDivElement[] = [];
+  for (let i = 0; i < 5; i++) {
+    const d = document.createElement("div");
+    d.style.cssText =
+      "position:absolute;left:50%;top:50%;width:3px;height:3px;" +
+      "border-radius:50%;background:rgba(255,205,130,0.85);" +
+      "box-shadow:0 0 3px rgba(255,180,90,0.6);" +
+      "transform:translate(-50%,-50%)";
+    reticleDots.push(d);
+  }
   const crossDot = document.createElement("div");
   crossDot.style.cssText =
     "position:absolute;left:50%;top:50%;width:3px;height:3px;" +
     "transform:translate(-50%,-50%);border-radius:50%;" +
-    "background:rgba(220,255,235,0.9)";
+    "background:rgba(255,210,138,0.95);" +
+    "box-shadow:0 0 4px rgba(255,190,110,0.8)";
   const strip = document.createElement("div");
   strip.style.cssText =
     "position:absolute;left:50%;bottom:16px;transform:translateX(-50%);" +
@@ -634,6 +903,8 @@ export function createGame(
     "border-radius:8px;white-space:nowrap";
   const windSpan = document.createElement("span");
   const zoomSpan = document.createElement("span");
+  const rangeSpan = document.createElement("span");
+  rangeSpan.textContent = "R: ---";
   const timeSpan = document.createElement("span");
   const breathWrap = document.createElement("span");
   breathWrap.style.cssText =
@@ -643,8 +914,20 @@ export function createGame(
   breathBar.style.cssText =
     "display:block;height:100%;width:100%;background:#8fe0b0";
   breathWrap.appendChild(breathBar);
-  strip.append(windSpan, zoomSpan, timeSpan, breathWrap);
-  scopeEl.append(scopeRing, crossH, crossV, crossDot, strip);
+  strip.append(windSpan, zoomSpan, rangeSpan, timeSpan, breathWrap);
+  scopeEl.append(
+    lensBlur,
+    scopeRing,
+    crossH,
+    crossV,
+    postT,
+    postB,
+    postL,
+    postR,
+    ...reticleDots,
+    crossDot,
+    strip,
+  );
   container.appendChild(scopeEl);
 
   const reloadBtn = document.createElement("button");
@@ -692,8 +975,99 @@ export function createGame(
     scopeRing.style.width = scopeRing.style.height = `${r * 2}px`;
     crossH.style.width = `${r * 2}px`;
     crossV.style.height = `${r * 2}px`;
+    lensBlur.style.width = lensBlur.style.height = `${r * 2}px`;
+    lensBlur.style.background =
+      `radial-gradient(circle, rgba(0,0,0,0) ${Math.round(r * 0.68)}px, ` +
+      `rgba(8,14,20,0.2) ${Math.round(r * 0.9)}px, rgba(0,0,0,0) ${r - 3}px)`;
+    // kalın post'lar: kenardan merkeze ~%62'si, merkezde ince hat görünür
+    const postLen = Math.round(r * 0.62);
+    const inner = Math.round(r * 0.38);
+    postB.style.width = postT.style.width = "3px";
+    postL.style.height = postR.style.height = "3px";
+    postB.style.height = postT.style.height = `${postLen}px`;
+    postL.style.width = postR.style.width = `${postLen}px`;
+    postB.style.transform = `translate(-50%, ${inner}px)`;
+    postT.style.transform = `translate(-50%, ${-(inner + postLen)}px)`;
+    postR.style.transform = `translate(${inner}px, -50%)`;
+    postL.style.transform = `translate(${-(inner + postLen)}px, -50%)`;
   }
   layoutScope();
+
+  /* headshot slow-mo — dünya 0.25x'e düşer, zoom hedefe doğru +1.5x punch */
+  let slowmoT = 0;
+  let zoomSaved = 0;
+  let slowTarget: TargetObj | null = null;
+
+  function triggerSlowMo(tg: TargetObj) {
+    if (slowmoT <= 0) {
+      zoomSaved = zoomTarget;
+      slowTarget = tg;
+    }
+    slowmoT = 0.7;
+    zoomTarget = Math.min(10, zoomTarget * 1.5);
+  }
+
+  /* laser rangefinder — dürbün alt şeridi "R: 487m" (~10Hz güncelleme).
+     Isın hedefe yeterince yakın geçiyorsa hedefin mesafesi ölçülür. */
+  const rangeRay = new THREE.Raycaster();
+  rangeRay.far = 900;
+  let rangeT = 0;
+  const chestTmp = new THREE.Vector3();
+  const rayToTmp = new THREE.Vector3();
+
+  function updateRangefinder() {
+    camera.getWorldDirection(dirTmp);
+    rangeRay.set(camera.position, dirTmp);
+    const list: THREE.Object3D[] = [ground];
+    for (const tg of targets) {
+      if (tg.state === "rising" || tg.state === "up" || tg.state === "stagger") {
+        for (const p of tg.parts) list.push(p);
+      }
+    }
+    let m: number | null = null;
+    let onTarget = false;
+    const first = rangeRay.intersectObjects(list, false)[0];
+    if (first) {
+      m = first.distance;
+      onTarget = !!first.object.userData.part;
+    }
+    // ışının hedefe 2m'den yakın geçmesi → hedef mesafesi
+    for (const tg of targets) {
+      if (tg.state !== "up" && tg.state !== "rising" && tg.state !== "stagger") {
+        continue;
+      }
+      tg.torso.getWorldPosition(chestTmp);
+      rayToTmp.copy(chestTmp).sub(camera.position);
+      const proj = rayToTmp.dot(dirTmp);
+      if (proj <= 0) continue;
+      const perpSq = rayToTmp.lengthSq() - proj * proj;
+      if (perpSq < 4) {
+        if (m === null || proj < m) m = proj;
+        onTarget = true;
+      }
+    }
+    const str = m === null ? "R: ---" : `R: ${Math.round(m)}m`;
+    if (str !== rangeSpan.textContent) rangeSpan.textContent = str;
+    rangeSpan.style.color = onTarget ? "#ffd28a" : "#cfe0da";
+  }
+
+  /* mil-dot pitch — 1 mil = 0.001 rad'ın ekran karşılığı (zoom'a ölçeklenir);
+     okunabilirlik için noktalar 2 mil arayla, min 5.5px */
+  let lastPitch = -1;
+
+  function updateReticle() {
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    if (!w || !h) return;
+    const r = Math.min(w, h) * 0.42;
+    const milPx = (0.001 / ((camera.fov * Math.PI) / 180)) * (r * 2);
+    const pitch = Math.max(milPx * 2, 5.5);
+    if (Math.abs(pitch - lastPitch) < 0.25) return;
+    lastPitch = pitch;
+    for (let i = 0; i < reticleDots.length; i++) {
+      reticleDots[i].style.transform = `translate(-50%,-50%) translateY(${(pitch * (i + 1)).toFixed(1)}px)`;
+    }
+  }
 
   /* ---------- actions ---------- */
 
@@ -741,15 +1115,13 @@ export function createGame(
 
     const hitList: THREE.Object3D[] = [ground];
     for (const tg of targets) {
-      if (tg.state === "rising" || tg.state === "up") {
-        tg.body.userData.tg = tg;
-        tg.head.userData.tg = tg;
-        hitList.push(tg.body, tg.head);
+      if (tg.state === "rising" || tg.state === "up" || tg.state === "stagger") {
+        for (const p of tg.parts) hitList.push(p);
       }
     }
 
     let impact: THREE.Vector3 | null = null;
-    let hit: { tg: TargetObj; part: "head" | "body"; point: THREE.Vector3 } | null =
+    let hit: { tg: TargetObj; part: HitPart; point: THREE.Vector3 } | null =
       null;
 
     for (let iter = 0; iter < 3; iter++) {
@@ -758,7 +1130,7 @@ export function createGame(
       const objs = raycaster.intersectObjects(hitList, false);
       const first = objs.length ? objs[0] : null;
       if (first) {
-        const part = first.object.userData.part as "head" | "body" | undefined;
+        const part = first.object.userData.part as HitPart | undefined;
         if (part) {
           hit = {
             tg: first.object.userData.tg as TargetObj,
@@ -789,20 +1161,46 @@ export function createGame(
     spawnTracer(muzzle, end);
     flashLight.position.copy(muzzle);
     flashLight.intensity = 28;
-    if (impact && !hit) spawnDust(impact, impact.distanceTo(origin));
+    spawnSmoke(muzzle);
+    if (impact && !hit) {
+      spawnDust(impact, impact.distanceTo(origin));
+      sfx.thud(); // zemine düşen mermi — uzak gümleme
+      // hedefin 3m yakınından geçen mermi → whiz
+      let nearest = Infinity;
+      for (const tg of targets) {
+        if (
+          tg.state !== "up" &&
+          tg.state !== "rising" &&
+          tg.state !== "stagger"
+        ) {
+          continue;
+        }
+        tg.torso.getWorldPosition(chestTmp);
+        nearest = Math.min(nearest, impact.distanceTo(chestTmp));
+      }
+      if (nearest < 3) sfx.whiz();
+    }
 
     if (hit) {
       const tg = hit.tg;
-      const pts = (hit.part === "head" ? 100 : 50) + tg.lane * 25;
+      const isHead = hit.part === "head";
+      let pts = (isHead ? 100 : 50) + tg.lane * 25;
+      if (hit.part === "leg") pts += 15; // low bonus
       score += pts;
       hits++;
-      if (hit.part === "head") headshots++;
+      if (isHead) headshots++;
       if (tg.dist > bestShot) bestShot = tg.dist;
       streak++;
       hooks.onScore?.(score);
-      hooks.onPopup?.(`${hit.part === "head" ? "HEADSHOT" : "HIT"} +${pts}`);
-      if (hit.part === "head") sfx.headshot();
-      else sfx.hit();
+      hooks.onPopup?.(
+        `${isHead ? "HEADSHOT" : hit.part === "leg" ? "LOW" : "HIT"} +${pts}`,
+      );
+      if (isHead) {
+        sfx.headshot();
+        triggerSlowMo(tg);
+      } else {
+        sfx.hit();
+      }
       if (streak % 3 === 0) {
         hooks.onPopup?.(`STREAK x${streak} 🔥`);
         sfx.streak(streak);
@@ -812,10 +1210,27 @@ export function createGame(
         hooks.onPopup?.("🏆 NEW BEST!");
         sfx.best();
       }
-      tg.state = "falling";
-      tg.t = 0;
-      tg.fast = true;
-      tg.tilt = (Math.random() - 0.5) * 0.7;
+      if (isHead) {
+        // kafa → anında ragdoll-vari çöküş
+        tg.state = "falling";
+        tg.t = 0;
+        tg.fast = true;
+        tg.fallMode = "crumple";
+        tg.fallDir = -(0.9 + Math.random() * 0.25);
+      } else if (tg.state === "stagger") {
+        // sendelerken ikinci isabet → direkt düşüş
+        tg.state = "falling";
+        tg.t = 0;
+        tg.fast = true;
+        tg.fallMode = "fall";
+        tg.fallDir = -(0.9 + Math.random() * 0.25);
+      } else {
+        // gövde/kol/bacak → önce sendeleme (twist + geri adım), sonra düşüş
+        tg.state = "stagger";
+        tg.t = 0;
+        tg.fast = true;
+        tg.fallDir = Math.random() < 0.5 ? -1 : 1;
+      }
     } else {
       streak = 0;
     }
@@ -996,6 +1411,34 @@ export function createGame(
       breathMeter = Math.min(1, breathMeter + dt / 2);
     }
 
+    /* headshot slow-mo: dünya 0.25x, zoom punch geri döner, nişan yumuşakça
+       düşen hedefe çekilir (oyun zamanı değil dünya zamanı yavaşlar) */
+    if (slowmoT > 0) {
+      slowmoT -= dt;
+      if (slowTarget) {
+        const p = slowTarget.group.position;
+        const dx = p.x - camera.position.x;
+        const dz = p.z - camera.position.z;
+        const hy = Math.hypot(dx, dz) || 1;
+        const wantYaw = Math.atan2(-dx, -dz);
+        const wantPitch = Math.atan2(p.y + 1.1 - camera.position.y, hy);
+        rawYaw += THREE.MathUtils.clamp(wantYaw - rawYaw, -0.03, 0.03) * Math.min(1, dt * 3);
+        rawPitch +=
+          THREE.MathUtils.clamp(wantPitch - rawPitch, -0.02, 0.02) *
+          Math.min(1, dt * 3);
+      }
+      if (slowmoT <= 0) {
+        slowmoT = 0;
+        slowTarget = null;
+        if (zoomSaved) {
+          zoomTarget = zoomSaved;
+          zoomSaved = 0;
+        }
+      }
+    }
+    const timeScale = slowmoT > 0 ? 0.25 : 1;
+    const sdt = dt * timeScale; // dünya zamanı
+
     /* aim smoothing — nişan yumuşak oturur, sarsak hissi yok */
     yaw += (rawYaw - yaw) * Math.min(1, dt * 12);
     pitch += (rawPitch - pitch) * Math.min(1, dt * 12);
@@ -1056,42 +1499,115 @@ export function createGame(
       breathBar.style.width = `${Math.round(breathMeter * 100)}%`;
       breathBar.style.background =
         breathMeter < 0.3 ? "#e0a860" : "#8fe0b0";
+      // laser rangefinder ~10Hz + mil-dot aralığı (zoom'a bağlı)
+      rangeT -= dt;
+      if (rangeT <= 0) {
+        rangeT = 0.1;
+        updateRangefinder();
+      }
+      updateReticle();
     }
 
-    /* targets: pop-up lifecycle */
+    /* targets — canlı humanoid lifecycle (sdt: slow-mo'dan etkilenir) */
     for (const tg of targets) {
       if (tg.state === "idle") continue;
-      tg.t += dt;
+      tg.t += sdt;
       if (tg.state === "rising") {
-        const k = Math.min(1, tg.t / 0.35);
+        const k = Math.min(1, tg.t / 0.4);
         tg.group.position.y = -2.4 + 2.4 * easeOutCubic(k);
         if (k >= 1) {
           tg.state = "up";
           tg.t = 0;
         }
       } else if (tg.state === "up") {
+        // idle life: nefes alma (göğüs scale)
+        const it = t * 1.6 + tg.phase;
+        tg.chest.scale.y = 1 + 0.03 * Math.sin(it);
+        tg.chest.scale.x = 1 + 0.012 * Math.sin(it);
+        // arada baş çevirme / ağırlık aktarma
+        tg.idleTimer -= sdt;
+        if (tg.idleTimer <= 0) {
+          tg.idleTimer = 2 + Math.random() * 3;
+          const r = Math.random();
+          if (r < 0.4) tg.headYaw = (Math.random() - 0.5) * 0.9;
+          else if (r < 0.55) tg.headYaw = 0;
+          else if (r < 0.8) tg.shiftX = (Math.random() - 0.5) * 0.09;
+          else tg.shiftX = 0;
+        }
+        tg.head.rotation.y +=
+          (tg.headYaw - tg.head.rotation.y) * Math.min(1, sdt * 3);
+        tg.hips.position.x +=
+          (tg.shiftX - tg.hips.position.x) * Math.min(1, sdt * 2.2);
+        tg.torso.rotation.z +=
+          (-tg.shiftX * 1.4 - tg.torso.rotation.z) * Math.min(1, sdt * 2.2);
         if (tg.t >= tg.upTime) {
           tg.state = "falling";
           tg.t = 0;
           tg.fast = false;
-          tg.tilt = 0;
+          tg.fallMode = "fall";
+          tg.fallDir = -(0.9 + Math.random() * 0.25);
+        }
+      } else if (tg.state === "stagger") {
+        // gövde isabeti: tors twist + geri adım, sonra düşüş
+        const k = Math.min(1, tg.t / 0.28);
+        const w = Math.sin(k * Math.PI);
+        tg.torso.rotation.y = tg.fallDir * 0.45 * w;
+        tg.group.rotation.x = -0.12 * w;
+        tg.group.position.z = tg.baseZ - 0.3 * easeOutCubic(k);
+        if (k >= 1) {
+          tg.state = "falling";
+          tg.t = 0;
+          tg.fallMode = "fall";
+          tg.fallDir = -(0.9 + Math.random() * 0.25);
         }
       } else if (tg.state === "falling") {
-        const dur = tg.fast ? 0.3 : 0.55;
+        // fiziksel düşüş: pivot ayaklarda döner / dizlerden çöker (~0.6s)
+        const dur = tg.fast ? 0.55 : 0.75;
         const k = Math.min(1, tg.t / dur);
-        tg.group.position.y = -2.4 * k * k;
-        tg.group.rotation.x = tg.fast ? tg.tilt * k * 1.4 : 0;
+        const e = easeOutCubic(k);
+        if (tg.fallMode === "fall") {
+          tg.group.rotation.x = tg.fallDir * 1.35 * e;
+          tg.group.rotation.z = tg.fallDir * 0.12 * e;
+          tg.group.position.y = -0.06 * e;
+          for (let i = 0; i < 2; i++) {
+            const side = i === 0 ? 1 : -1;
+            tg.arms[i].g.rotation.z = side * (0.1 + 0.9 * e);
+            tg.arms[i].elbow.rotation.x = -0.35 - 0.6 * e;
+            tg.legs[i].knee.rotation.x = 0.06 + 0.5 * e;
+          }
+        } else {
+          // kafa isabeti çöküşü: dizler katlanır, gövde yığılır, kollar açılır
+          tg.group.position.y = -0.6 * k * k;
+          tg.group.rotation.x = -0.15 * e;
+          tg.torso.rotation.x = 0.5 * e;
+          tg.head.rotation.x = 0.7 * e;
+          for (let i = 0; i < 2; i++) {
+            const side = i === 0 ? 1 : -1;
+            tg.arms[i].g.rotation.z = side * (0.1 + 1.1 * e);
+            tg.arms[i].elbow.rotation.x = -0.35 - 0.9 * e;
+            tg.legs[i].knee.rotation.x = 0.06 + 1.5 * e;
+          }
+        }
+        if (k >= 1) {
+          tg.state = "sinking";
+          tg.t = 0;
+        }
+      } else if (tg.state === "sinking") {
+        // yere gömül + fade out
+        const k = Math.min(1, tg.t / 0.45);
+        tg.group.position.y -= sdt * 1.5;
+        for (const m of tg.mats) m.opacity = 1 - k;
         if (k >= 1) {
           tg.state = "idle";
           tg.group.visible = false;
-          tg.group.rotation.x = 0;
+          resetPose(tg);
         }
       }
     }
 
-    /* spawn scheduler — aynı anda en fazla 2 hedef */
+    /* spawn scheduler — aynı anda en fazla 2 hedef (dünya zamanı) */
     if (!over) {
-      spawnT -= dt;
+      spawnT -= sdt;
       if (spawnT <= 0) {
         const activeCount = targets.filter((x) => x.state !== "idle").length;
         if (activeCount < 2) {
@@ -1106,7 +1622,7 @@ export function createGame(
     /* tracers fade */
     for (const tr of tracerPool) {
       if (!tr.line.visible) continue;
-      tr.life -= dt;
+      tr.life -= sdt;
       if (tr.life <= 0) {
         tr.line.visible = false;
         tr.mat.opacity = 0;
@@ -1118,7 +1634,7 @@ export function createGame(
     /* dust puffs expand + fade */
     for (const d of dustPool) {
       if (!d.sprite.visible) continue;
-      d.life -= dt;
+      d.life -= sdt;
       if (d.life <= 0) {
         d.sprite.visible = false;
         d.mat.opacity = 0;
@@ -1127,6 +1643,21 @@ export function createGame(
       const k = 1 - d.life / d.max;
       d.sprite.scale.setScalar(d.size * (0.6 + 2.4 * k));
       d.mat.opacity = (1 - k) * 0.7;
+    }
+
+    /* muzzle smoke — genişler, hafif yükselir, solur */
+    for (const s of smokePool) {
+      if (!s.sprite.visible) continue;
+      s.life -= sdt;
+      if (s.life <= 0) {
+        s.sprite.visible = false;
+        s.mat.opacity = 0;
+        continue;
+      }
+      const k = 1 - s.life / s.max;
+      s.sprite.scale.setScalar(s.size * (0.4 + 2.4 * k));
+      s.mat.opacity = (1 - k) * 0.3;
+      s.sprite.position.y += s.vy * sdt;
     }
 
     flashLight.intensity *= Math.exp(-dt * 26);
@@ -1185,10 +1716,9 @@ export function createGame(
       hintEl.remove();
       stopWindAmbience();
       puffTex.dispose();
-      bodyGeo.dispose();
-      headGeo.dispose();
-      bodyMat.dispose();
-      headMat.dispose();
+      for (const g of Object.values(rigGeo)) g.dispose();
+      for (const tg of targets) for (const m of tg.mats) m.dispose();
+      for (const s of smokePool) s.mat.dispose();
       rockGeo.dispose();
       rockMat.dispose();
       poleGeo.dispose();
