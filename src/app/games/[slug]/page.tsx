@@ -29,7 +29,7 @@ export default async function GamePage({
       <header className="flex items-center gap-3 px-4 py-3">
         <Link
           href="/"
-          className="card px-3 py-1.5 text-sm text-white/70 hover:text-white"
+          className="card px-3 py-1.5 text-sm text-muted hover:text-foreground"
         >
           ← Games
         </Link>

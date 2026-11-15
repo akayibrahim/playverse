@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 const Stage = dynamic(() => import("./StageCanvas"), {
   ssr: false,
   loading: () => (
-    <div className="card h-[60vh] flex items-center justify-center text-white/40">
+    <div className="card h-[60vh] flex items-center justify-center text-faint">
       Loading scene…
     </div>
   ),

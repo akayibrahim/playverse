@@ -75,7 +75,7 @@ export default function StageCanvas({ slug }: { slug: string }) {
       .catch(() => {
         if (containerRef.current && !cancelled) {
           containerRef.current.innerHTML =
-            '<p class="text-white/40 p-8">This game isn\'t ready yet.</p>';
+            '<p class="text-faint p-8">This game isn\'t ready yet.</p>';
         }
       });
 
