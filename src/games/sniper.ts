@@ -980,13 +980,13 @@ export function createGame(
     /* breath state machine */
     if (exhaleT > 0) {
       exhaleT -= dt;
-      breathMul += (2 - breathMul) * Math.min(1, dt * 6);
-      if (exhaleT <= 0) breathMul = 2;
+      breathMul += (1.6 - breathMul) * Math.min(1, dt * 6);
+      if (exhaleT <= 0) breathMul = 1.6;
     } else if (longPress || shiftHeld) {
       if (breathMeter > 0) {
         breathMul += (0 - breathMul) * Math.min(1, dt * 5);
-        breathMeter = Math.max(0, breathMeter - dt / 3);
-        if (breathMeter <= 0) exhaleT = 1; // zorla nefes ver
+        breathMeter = Math.max(0, breathMeter - dt / 5); // 5 sn nefes tutma
+        if (breathMeter <= 0) exhaleT = 0.8; // zorla nefes ver
       } else {
         breathMul += (1 - breathMul) * Math.min(1, dt * 4);
         breathMeter = Math.min(1, breathMeter + dt / 2);
@@ -1000,8 +1000,8 @@ export function createGame(
     yaw += (rawYaw - yaw) * Math.min(1, dt * 12);
     pitch += (rawPitch - pitch) * Math.min(1, dt * 12);
 
-    /* sway — zoom arttıkça büyür, nefes tutunca söner (yarı amp: kontrollü) */
-    const amp = 0.0018 * (0.5 + 0.3 * (70 / camera.fov)) * breathMul;
+    /* sway — zoom'la yumuşak ölçeklenir (10x'te bile 2 katı değil), nefes tutunca söner */
+    const amp = 0.0015 * (1 + (70 / camera.fov - 1) * 0.125) * breathMul;
     swayYaw =
       amp * (Math.sin(t * 1.1) * 0.7 + Math.sin(t * 2.33 + 1.7) * 0.3);
     swayPitch =
