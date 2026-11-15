@@ -33,6 +33,17 @@ export function GameIcon({ slug, className }: { slug: string; className?: string
       </svg>
     );
   }
+  if (slug === "sniper") {
+    return (
+      <svg viewBox="0 0 64 64" fill="none" className={className}>
+        <circle cx="32" cy="32" r="20" stroke="#ffb347" strokeWidth="2.5" />
+        <circle cx="32" cy="32" r="2.5" fill="#ffb347" />
+        <path d="M32 6 V16 M32 48 V58 M6 32 H16 M48 32 H58" stroke="#ffb347" strokeWidth="2.5" strokeLinecap="round" />
+        {/* mermi düşüş eğrisi */}
+        <path d="M40 18 Q52 22 56 34" stroke="#ffd9a0" strokeWidth="1.8" strokeDasharray="3 3" strokeLinecap="round" />
+      </svg>
+    );
+  }
   /* stacker */
   return (
     <svg viewBox="0 0 64 64" fill="none" className={className}>

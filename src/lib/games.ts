@@ -30,6 +30,14 @@ export const GAMES: GameMeta[] = [
     status: "live",
   },
   {
+    slug: "sniper",
+    title: "Ghost Range",
+    tagline: "Dusk sniper range — real ballistics, wind, breath control.",
+    emoji: "🎯",
+    gradient: "from-orange-500/60 to-rose-500/60",
+    status: "live",
+  },
+  {
     slug: "stacker",
     title: "Stack Tower",
     tagline: "One tap to drop the block — stack the perfect tower.",
