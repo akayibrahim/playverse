@@ -136,15 +136,15 @@ export default function StageCanvas({ slug }: { slug: string }) {
           className="absolute inset-0 flex flex-col items-center justify-center
             gap-3 bg-[#05060f]/80 backdrop-blur-sm rounded-2xl gameover-flash"
         >
-          <p className="text-white/60 text-sm">You crashed!</p>
+          <p className="text-muted text-sm">You crashed!</p>
           <p className="text-4xl font-bold neon-text">
             {score.toLocaleString("en-US")}
           </p>
-          <p className="text-white/50 text-xs">
+          <p className="text-muted text-xs">
             {stats.map((s) => `${s.label} ${s.value}`).join(" · ")}
           </p>
           {score >= best && score > 0 && (
-            <p className="text-cyan-300 text-sm">🏆 New best!</p>
+            <p className="text-accent-2 text-sm">🏆 New best!</p>
           )}
           <button
             type="button"
@@ -154,7 +154,7 @@ export default function StageCanvas({ slug }: { slug: string }) {
           >
             ↻ Play again
           </button>
-          <p className="text-white/40 text-xs">🏆 Best: {best}</p>
+          <p className="text-faint text-xs">🏆 Best: {best}</p>
         </div>
       )}
 
@@ -169,13 +169,13 @@ export default function StageCanvas({ slug }: { slug: string }) {
 
       {/* HUD */}
       <div className="mt-2 flex items-center justify-between text-sm px-1">
-        <span className="text-white/60">
-          Score: <strong className="text-white">{score}</strong>
+        <span className="text-muted">
+          Score: <strong className="text-foreground">{score}</strong>
         </span>
-        <span className="hidden sm:block text-white/35">
+        <span className="hidden sm:block text-faint">
           ← → steer · ↑/W boost · swipe on mobile
         </span>
-        <span className="text-cyan-300">🏆 Best: {best}</span>
+        <span className="text-accent-2">🏆 Best: {best}</span>
       </div>
     </div>
   );

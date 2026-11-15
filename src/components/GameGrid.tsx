@@ -38,13 +38,13 @@ function StatusPill({ live }: { live: boolean }) {
         text-[10px] font-semibold uppercase tracking-wider backdrop-blur-sm
         ${
           live
-            ? "bg-emerald-400/15 text-emerald-300 border border-emerald-400/30"
-            : "bg-white/10 text-white/50 border border-white/10"
+            ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30"
+            : "bg-surface text-muted border border-surface-border"
         }`}
     >
       <span
         className={`h-1.5 w-1.5 rounded-full ${
-          live ? "bg-emerald-400 animate-pulse" : "bg-white/40"
+          live ? "bg-emerald-500 animate-pulse" : "bg-faint"
         }`}
       />
       {live ? "Live" : "Soon"}
@@ -110,18 +110,18 @@ export function GameGrid() {
               <h3 className="font-bold text-lg tracking-tight">
                 {game.title}
               </h3>
-              <p className="mt-1 text-sm text-white/50 leading-snug">
+              <p className="mt-1 text-sm text-muted leading-snug">
                 {game.tagline}
               </p>
               <div className="mt-4 flex items-center justify-between">
                 {live ? (
                   <>
                     {bestScores[game.slug] ? (
-                      <span className="text-xs font-semibold text-cyan-300">
+                      <span className="text-xs font-semibold text-accent-2">
                         🏆 {bestScores[game.slug].toLocaleString("en-US")}
                       </span>
                     ) : (
-                      <span className="text-xs text-white/35">
+                      <span className="text-xs text-faint">
                         No score yet
                       </span>
                     )}
@@ -135,7 +135,7 @@ export function GameGrid() {
                     </span>
                   </>
                 ) : (
-                  <span className="text-xs text-white/30">In the workshop…</span>
+                  <span className="text-xs text-faint">In the workshop…</span>
                 )}
               </div>
             </div>

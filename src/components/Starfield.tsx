@@ -40,10 +40,14 @@ export default function Starfield() {
     }
 
     const t0 = performance.now();
+    let darkMode = document.documentElement.classList.contains("dark");
+
     function draw(now: number) {
       if (!ctx) return;
       const t = (now - t0) / 1000;
       ctx.clearRect(0, 0, w, h);
+      const bright = darkMode ? "#7cc7ff" : "#7c5cff";
+      const dim = darkMode ? "#ffffff" : "#9d8cff";
       for (const s of stars) {
         s.y += s.v;
         if (s.y > h + 2) {
@@ -51,8 +55,8 @@ export default function Starfield() {
           s.x = Math.random() * w;
         }
         const tw = 0.35 + 0.65 * Math.abs(Math.sin(t * 1.5 + s.ph));
-        ctx.globalAlpha = tw;
-        ctx.fillStyle = s.r > 1 ? "#7cc7ff" : "#ffffff";
+        ctx.globalAlpha = tw * (darkMode ? 1 : 0.75);
+        ctx.fillStyle = s.r > 1 ? bright : dim;
         ctx.beginPath();
         ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
         ctx.fill();
@@ -61,12 +65,22 @@ export default function Starfield() {
       raf = requestAnimationFrame(draw);
     }
 
+    // tema değişimini yakala
+    const observer = new MutationObserver(() => {
+      darkMode = document.documentElement.classList.contains("dark");
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+
     resize();
     window.addEventListener("resize", resize);
     raf = requestAnimationFrame(draw);
     return () => {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
+      observer.disconnect();
     };
   }, []);
 
