@@ -566,6 +566,8 @@ export function createGame(
 
   let yaw = 0;
   let pitch = 0;
+  let rawYaw = 0; // hedef açılar (yumuşatma öncesi)
+  let rawPitch = 0;
   let zoomTarget = 1;
   let recoil = 0;
   let swayYaw = 0;
@@ -880,10 +882,11 @@ export function createGame(
       return;
     }
     if (p.moved > 8) longPress = false;
-    const sens = 0.0022 * (camera.fov / 70); // zoom arttıkça hassasiyet düşer
-    yaw = THREE.MathUtils.clamp(yaw - dx * sens, -YAW_LIMIT, YAW_LIMIT);
-    pitch = THREE.MathUtils.clamp(
-      pitch - dy * sens,
+    // ekran genişliğine göre normalize + zoom'a göre incelen hassasiyet
+    const sens = (1.6 / Math.max(container.clientWidth, 300)) * (camera.fov / 70);
+    rawYaw = THREE.MathUtils.clamp(rawYaw - dx * sens, -YAW_LIMIT, YAW_LIMIT);
+    rawPitch = THREE.MathUtils.clamp(
+      rawPitch - dy * sens,
       PITCH_MIN,
       PITCH_MAX,
     );
@@ -897,7 +900,7 @@ export function createGame(
     longPress = false;
     if (!p || over) return;
     const dur = performance.now() - p.t0;
-    if (wasPinch || p.moved > 6 || dur > 320) return;
+    if (wasPinch || p.moved > 12 || dur > 320) return;
     if (e.pointerType !== "mouse") {
       const now = performance.now();
       if (now - lastTapAt < 320) {
@@ -993,8 +996,12 @@ export function createGame(
       breathMeter = Math.min(1, breathMeter + dt / 2);
     }
 
-    /* sway — zoom arttıkça büyür, nefes tutunca söner */
-    const amp = 0.0032 * (0.5 + 0.3 * (70 / camera.fov)) * breathMul;
+    /* aim smoothing — nişan yumuşak oturur, sarsak hissi yok */
+    yaw += (rawYaw - yaw) * Math.min(1, dt * 12);
+    pitch += (rawPitch - pitch) * Math.min(1, dt * 12);
+
+    /* sway — zoom arttıkça büyür, nefes tutunca söner (yarı amp: kontrollü) */
+    const amp = 0.0018 * (0.5 + 0.3 * (70 / camera.fov)) * breathMul;
     swayYaw =
       amp * (Math.sin(t * 1.1) * 0.7 + Math.sin(t * 2.33 + 1.7) * 0.3);
     swayPitch =
