@@ -125,7 +125,7 @@ export function createGame(
   const width = container.clientWidth || 1;
   const height = container.clientHeight || 1;
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
   renderer.setSize(width, height);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -134,7 +134,7 @@ export function createGame(
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x05060f);
+  scene.background = new THREE.Color(0x05060f); // oyun sahnesi her temada karanlık
   scene.fog = new THREE.Fog(0x05060f, 16, 55);
 
   const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 120);

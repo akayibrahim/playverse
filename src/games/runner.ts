@@ -99,7 +99,7 @@ export function createGame(
   const width = container.clientWidth;
   const height = container.clientHeight;
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75)); // bloom ile perf dengesi
   renderer.setSize(width, height);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -108,6 +108,7 @@ export function createGame(
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x05060f); // oyun sahnesi her temada karanlık
   scene.fog = new THREE.Fog(0x05060f, 14, 75);
 
   const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 150);
