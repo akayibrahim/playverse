@@ -14,11 +14,11 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "Playverse — 3D mini games in your browser",
+    default: "Playverse — games from tomorrow",
     template: "%s · Playverse",
   },
   description:
-    "Simple but visually striking 3D games you can play in your browser, on mobile and web.",
+    "Massive-scale 3D games that run in your browser. Thousands of agents, real-time physics, zero installs.",
 };
 
 export const viewport: Viewport = {

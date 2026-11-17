@@ -14,6 +14,14 @@ export type GameMeta = {
  */
 export const GAMES: GameMeta[] = [
   {
+    slug: "swarm",
+    title: "SWARM MIND",
+    tagline: "Command a 6,000-drone hive mind against the machines.",
+    emoji: "🐜",
+    gradient: "from-cyan-400/60 to-violet-600/60",
+    status: "live",
+  },
+  {
     slug: "runner",
     title: "Neon Runner",
     tagline: "Run the endless neon track — swipe between lanes, dodge asteroids.",

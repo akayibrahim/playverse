@@ -42,39 +42,39 @@ export default function Home() {
 
         <div className="relative mx-auto max-w-6xl px-5 pt-20 pb-16 text-center">
           <Link
-            href="/games/runner"
-            className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30
-              bg-emerald-500/10 px-4 py-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-300
-              hover:bg-emerald-500/20 transition"
+            href="/games/swarm"
+            className="inline-flex items-center gap-2 rounded-full border border-cyan-400/30
+              bg-cyan-400/10 px-4 py-1.5 text-xs font-semibold text-cyan-300
+              hover:bg-cyan-400/20 transition"
           >
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            Neon Runner is live — beat 3,008?
+            <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
+            Flagship: SWARM MIND is live — 6,000 drones
           </Link>
 
           <h1 className="mt-6 text-5xl sm:text-7xl font-extrabold tracking-tight leading-[1.04]">
-            Arcade-grade 3D.
+            Games from
             <br />
             <span className="neon-text [text-shadow:0_0_40px_rgba(124,92,255,0.45)]">
-              Zero installs.
+              tomorrow.
             </span>
           </h1>
 
           <p className="mt-5 text-base sm:text-lg text-muted max-w-xl mx-auto">
-            Real-time WebGL games that run straight in your browser. Swipe on
-            your phone, arrow keys on your desktop — your scores never leave
-            your device.
+            Real-time worlds at a scale your browser has never seen — thousands
+            of agents, living physics, zero installs. This is what play looks
+            like next.
           </p>
 
           <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
             <Link
-              href="/games/runner"
+              href="/games/swarm"
               className="rounded-full px-7 py-3.5 font-bold text-white text-sm
-                bg-gradient-to-r from-violet-600 to-cyan-500
-                shadow-[0_0_30px_rgba(124,92,255,0.45)]
-                hover:brightness-115 hover:shadow-[0_0_44px_rgba(0,224,255,0.55)]
+                bg-gradient-to-r from-cyan-500 to-violet-600
+                shadow-[0_0_30px_rgba(0,224,255,0.4)]
+                hover:brightness-115 hover:shadow-[0_0_44px_rgba(124,92,255,0.6)]
                 active:scale-95 transition"
             >
-              ▶ Play now
+              ▶ Enter the swarm
             </Link>
             <a
               href="#games"
@@ -89,8 +89,8 @@ export default function Home() {
           {/* stat satırı */}
           <div className="mt-14 mx-auto grid max-w-lg grid-cols-3 gap-px overflow-hidden rounded-2xl border border-surface-border bg-surface-border backdrop-blur-sm">
             {[
-              ["3", "games at launch"],
-              ["60fps", "real-time WebGL"],
+              ["6,000", "agents in real time"],
+              ["60fps", "instanced WebGL"],
               ["0", "installs needed"],
             ].map(([v, l]) => (
               <div key={l} className="bg-background/80 px-4 py-4">
@@ -112,7 +112,7 @@ export default function Home() {
       </section>
 
       <footer className="border-t border-surface-border py-8 text-center text-xs text-faint">
-        Playverse · scores stay on your device · v0.2
+        Playverse · games from tomorrow · scores stay on your device · v0.3
       </footer>
     </main>
   );

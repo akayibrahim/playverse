@@ -1,5 +1,22 @@
 /** Her oyun için özel çizilmiş neon SVG ikon — emoji yok */
 export function GameIcon({ slug, className }: { slug: string; className?: string }) {
+  if (slug === "swarm") {
+    return (
+      <svg viewBox="0 0 64 64" fill="none" className={className}>
+        {/* sürü kümesi — altıgen düzende akan noktalar */}
+        <path d="M32 6 L54 19 V45 L32 58 L10 45 V19 Z" stroke="#00e0ff" strokeWidth="2.5" opacity="0.9" />
+        {[
+          [32, 32], [26, 24], [38, 24], [20, 32], [44, 32], [26, 40], [38, 40],
+          [23, 28], [41, 28], [32, 20], [23, 36], [41, 36], [32, 44],
+        ].map(([x, y], i) => (
+          <circle key={i} cx={x} cy={y} r={i === 0 ? 3.4 : 2.2 - (i % 3) * 0.4} fill={i === 0 ? "#bff6ff" : "#00e0ff"} />
+        ))}
+        {/* devriye */}
+        <circle cx="47" cy="13" r="2.6" fill="#ff2d95" />
+        <circle cx="17" cy="49" r="2" fill="#ff2d95" />
+      </svg>
+    );
+  }
   if (slug === "runner") {
     return (
       <svg viewBox="0 0 64 64" fill="none" className={className}>
