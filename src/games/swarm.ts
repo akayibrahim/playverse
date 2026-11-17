@@ -323,7 +323,10 @@ export function createGame(
 
   /* ---------- player swarm (INSTANCED — tek draw call) ---------- */
 
-  const droneGeo = new THREE.OctahedronGeometry(0.15, 0);
+  /* okunabilir dronlar: 1.8x büyük + yerel +Z'de uzatılmış (hız yönünde
+   * hizalanınca "mürettebat uçağı" silueti, tumbling nokta değil) */
+  const droneGeo = new THREE.OctahedronGeometry(0.28, 0);
+  droneGeo.scale(1, 1, 1.8);
   const droneMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   const droneMesh = new THREE.InstancedMesh(droneGeo, droneMat, CAP);
   droneMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -347,6 +350,7 @@ export function createGame(
     new Float32Array(CAP * 3),
     3,
   );
+  colorAttr.setUsage(THREE.DynamicDrawUsage); // hız→renk gradyanı: karede akıyor
   droneMesh.instanceColor = colorAttr;
 
   /* spatial hash — counting-sort grid, çerçeve başına O(n), allocation yok */
@@ -518,9 +522,11 @@ export function createGame(
     dyingColor.needsUpdate = true;
   }
 
-  /** drone ölümü: beyaz flaş + swap-remove (diziler kompakt kalır) */
-  function killDrone(i: number) {
-    spawnDeath(posX[i], posY[i], posZ[i], 3, 3, 3);
+  /** drone ölümü: flaş + swap-remove (diziler kompakt kalır)
+   *  cause "sec" → kırmızı flaş (güvenlik yedi), "emp"/varsayılan → beyaz */
+  function killDrone(i: number, cause: "sec" | "emp" = "emp") {
+    if (cause === "sec") spawnDeath(posX[i], posY[i], posZ[i], 3, 0.22, 0.32);
+    else spawnDeath(posX[i], posY[i], posZ[i], 3, 3, 3);
     const last = --swarmCount;
     if (i !== last) {
       posX[i] = posX[last];
@@ -544,13 +550,19 @@ export function createGame(
 
   /* ---------- security drones (magenta avcılar) ---------- */
 
-  const secGeo = new THREE.OctahedronGeometry(0.5, 0);
-  secGeo.scale(1, 0.6, 1.5);
-  const secMat = new THREE.MeshBasicMaterial({ color: 0xff2d95 });
+  /* net düşman: 2.5x büyük, kırmızı-magenta, hız yönüne bakan avcılar */
+  const secGeo = new THREE.OctahedronGeometry(1.15, 0);
+  secGeo.scale(0.9, 0.55, 1.7);
+  const secMat = new THREE.MeshBasicMaterial({ color: 0xff2244 });
   const secMesh = new THREE.InstancedMesh(secGeo, secMat, SEC_CAP);
   secMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   secMesh.frustumCulled = false;
   scene.add(secMesh);
+
+  /* sürüye en yakın güvenlik drone'unu takip eden tek kırmızı nokta ışık —
+   * "yakında tehdit var" sinyali (drone başına ışık yok: pahalı) */
+  const secLight = new THREE.PointLight(0xff2244, 0, 34, 1.6);
+  scene.add(secLight);
 
   interface SecDrone {
     x: number;
@@ -625,7 +637,8 @@ export function createGame(
     t: number; // dissolve sayacı
     pending: number;
   }
-  const clusterGeo = new THREE.SphereGeometry(0.85, 16, 12);
+  const clusterGeo = new THREE.SphereGeometry(1.3, 16, 12); // 1.5x büyük, okunur
+  const haloGeo = new THREE.SphereGeometry(2.1, 16, 12); // yumuşak mor hale
   const clusters: Cluster[] = [];
   for (let i = 0; i < CLUSTER_N; i++) {
     const mat = new THREE.MeshBasicMaterial({
@@ -633,7 +646,16 @@ export function createGame(
       transparent: true,
       opacity: 0.9,
     });
+    const haloMat = new THREE.MeshBasicMaterial({
+      color: 0x8a5cff,
+      transparent: true,
+      opacity: 0.16,
+      side: THREE.BackSide,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
     const mesh = new THREE.Mesh(clusterGeo, mat);
+    mesh.add(new THREE.Mesh(haloGeo, haloMat)); // çocuk: çözülürken birlikte söner
     const x = (Math.random() - 0.5) * 80;
     const z = (Math.random() - 0.5) * 80;
     mesh.position.set(x, 1.4, z);
@@ -649,6 +671,44 @@ export function createGame(
       t: 0,
       pending: 0,
     });
+  }
+
+  /* en yakın çekirdeği takip eden tek mor fener ışığı */
+  const coreLight = new THREE.PointLight(0x8a5cff, 0, 30, 1.6);
+  scene.add(coreLight);
+
+  /* emilme şok dalgası — çekirdek pozisyonundan genişleyen cian halka havuzu */
+  const rippleGeo = new THREE.RingGeometry(0.94, 1.06, 48);
+  const ripples: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>[] = [];
+  let rippleIdx = 0;
+  for (let i = 0; i < 3; i++) {
+    const m = new THREE.MeshBasicMaterial({
+      color: 0x00e0ff,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(rippleGeo, m);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.visible = false;
+    scene.add(mesh);
+    ripples.push(mesh as THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>);
+  }
+  function spawnRipple(x: number, z: number) {
+    const m = ripples[rippleIdx++ % ripples.length];
+    m.position.set(x, 0.3, z);
+    m.scale.setScalar(0.5);
+    m.material.opacity = 0.85;
+    m.visible = true;
+  }
+  function updateRipples(dt: number) {
+    for (const m of ripples) {
+      if (!m.visible) continue;
+      m.scale.addScalar(dt * 26);
+      m.material.opacity -= dt * 1.4;
+      if (m.material.opacity <= 0) m.visible = false;
+    }
   }
 
   function respawnCluster(c: Cluster) {
@@ -684,6 +744,37 @@ export function createGame(
   empGlow.rotation.x = -Math.PI / 2;
   empGlow.visible = false;
   scene.add(empRing, empGlow);
+
+  /* ---------- EMP telegraf — halkadan 2.5 sn önce okunur uyarı ---------- */
+
+  /* gelecekteki MAKS yarıçap: yerde sabit, soluk, "kesikli" hissi veren
+   * çok segmentli ince halka */
+  const warnRingGeo = new THREE.RingGeometry(EMP_RADIUS - 0.22, EMP_RADIUS, 96);
+  const warnRingMat = new THREE.MeshBasicMaterial({
+    color: 0xff2d95,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const empWarnRing = new THREE.Mesh(warnRingGeo, warnRingMat);
+  empWarnRing.rotation.x = -Math.PI / 2;
+  empWarnRing.position.y = 0.12;
+  empWarnRing.visible = false;
+  /* geri sayımla senkron genişleyen önizleme: halkanın gelecekteki konumu */
+  const previewGeo = new THREE.RingGeometry(0.9, 1.02, 64);
+  const previewMat = new THREE.MeshBasicMaterial({
+    color: 0xff5cb0,
+    transparent: true,
+    opacity: 0.5,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const empPreview = new THREE.Mesh(previewGeo, previewMat);
+  empPreview.rotation.x = -Math.PI / 2;
+  empPreview.position.y = 0.14;
+  empPreview.visible = false;
+  scene.add(empWarnRing, empPreview);
 
   /* ---------- imleç halkası (in-world goal) ---------- */
 
@@ -820,6 +911,158 @@ export function createGame(
     "move to guide the hive · hold = COMPRESS (dense: absorb + melee, EMP bait) · tap = SCATTER";
   container.appendChild(hintEl);
 
+  /* ---------- oyun içi durum çubuğu (DOM, okunabilir) ---------- */
+
+  const statusEl = document.createElement("div");
+  statusEl.style.cssText =
+    "position:absolute;top:0;left:0;right:0;z-index:5;pointer-events:none;" +
+    "display:flex;align-items:flex-start;justify-content:space-between;gap:8px;" +
+    "padding:10px 14px;user-select:none;-webkit-user-select:none";
+  const swarmLabelEl = document.createElement("div");
+  swarmLabelEl.style.cssText =
+    "font:700 16px/1.2 system-ui,sans-serif;color:#7df0ff;" +
+    "text-shadow:0 0 8px rgba(0,224,255,0.55);white-space:nowrap";
+  const directiveEl = document.createElement("div");
+  directiveEl.style.cssText =
+    "flex:1;text-align:center;font:600 13px/1.3 system-ui,sans-serif;" +
+    "color:rgba(220,240,255,0.9);text-shadow:0 1px 4px rgba(0,0,0,0.8);" +
+    "min-width:0";
+  directiveEl.textContent = "";
+  const scoreEl = document.createElement("div");
+  scoreEl.style.cssText =
+    "font:700 15px/1.2 system-ui,sans-serif;color:#ffd166;" +
+    "text-shadow:0 0 8px rgba(255,209,102,0.4);white-space:nowrap";
+  scoreEl.textContent = "0";
+  statusEl.append(swarmLabelEl, directiveEl, scoreEl);
+  container.appendChild(statusEl);
+  swarmLabelEl.textContent = `🐜 SWARM ${CAP.toLocaleString("en-US")}`;
+  directiveEl.textContent = "MOVE to steer · HOLD to compress · TAP to scatter";
+
+  /* ---------- onboarding overlay — sim başlamadan önce ---------- */
+
+  let started = false;
+  let overlayEl: HTMLDivElement | null = null;
+
+  function readSeenFlag(): boolean {
+    try {
+      return localStorage.getItem("playverse:swarmSeen") === "1";
+    } catch {
+      return false;
+    }
+  }
+  function writeSeenFlag() {
+    try {
+      localStorage.setItem("playverse:swarmSeen", "1");
+    } catch {
+      /* private mode vb. — optional */
+    }
+  }
+
+  function startSim() {
+    if (started) return;
+    started = true;
+    writeSeenFlag();
+    ensureAudio(); // kullanıcı jesti → ses burada açılır
+    if (overlayEl) {
+      overlayEl.remove();
+      overlayEl = null;
+    }
+    clock.getDelta(); // duraklamada biriken dt'yi at
+  }
+
+  function showOnboarding() {
+    const seen = readSeenFlag();
+    const overlay = document.createElement("div");
+    overlayEl = overlay;
+    overlay.style.cssText =
+      "position:absolute;inset:0;z-index:10;display:flex;align-items:center;" +
+      "justify-content:center;background:rgba(3,5,15,0.55);" +
+      "backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);" +
+      "user-select:none;-webkit-user-select:none;cursor:pointer";
+
+    const card = document.createElement("div");
+    card.style.cssText =
+      "max-width:520px;width:calc(100% - 48px);padding:26px 30px;text-align:center;" +
+      "background:rgba(9,13,32,0.82);border:1px solid rgba(0,224,255,0.28);" +
+      "border-radius:20px;box-shadow:0 0 42px rgba(0,224,255,0.16)";
+
+    const title = document.createElement("div");
+    title.style.cssText =
+      "font:800 clamp(26px,6vw,40px)/1.1 system-ui,sans-serif;letter-spacing:0.02em;" +
+      "background:linear-gradient(90deg,#00e0ff,#8a5cff);-webkit-background-clip:text;" +
+      "background-clip:text;color:transparent";
+    title.textContent = "YOU ARE THE SWARM";
+    card.appendChild(title);
+
+    const sub = document.createElement("div");
+    sub.style.cssText =
+      "margin-top:8px;font:600 14px/1.4 system-ui,sans-serif;color:rgba(190,220,255,0.85)";
+    sub.textContent = `${CAP.toLocaleString("en-US")} drones. One mind. Yours.`;
+    card.appendChild(sub);
+
+    if (!seen) {
+      /* tam sürüm: lejant + kontroller (ilk oyun) */
+      const legend = document.createElement("div");
+      legend.style.cssText =
+        "margin-top:18px;display:flex;flex-direction:column;gap:9px;" +
+        "font:500 13.5px/1.35 system-ui,sans-serif;color:rgba(210,230,255,0.9);" +
+        "text-align:left";
+      const rows: Array<[string, string, string]> = [
+        ["#00e0ff", "🟦", "Cyan dots — your drones"],
+        ["#ff2244", "🟥", "Security drones — they EAT your swarm"],
+        ["#8a5cff", "🟪", "Absorb cores — touch one: +150 drones"],
+      ];
+      for (const [c, dot, label] of rows) {
+        const row = document.createElement("div");
+        row.style.cssText =
+          "display:flex;align-items:center;gap:10px;padding:7px 12px;" +
+          "background:rgba(255,255,255,0.04);border-radius:10px";
+        const swatch = document.createElement("span");
+        swatch.style.cssText = `width:12px;height:12px;border-radius:50%;flex:none;background:${c};box-shadow:0 0 10px ${c}`;
+        const text = document.createElement("span");
+        text.textContent = `${dot} ${label}`;
+        row.append(swatch, text);
+        legend.appendChild(row);
+      }
+      card.appendChild(legend);
+
+      const controls = document.createElement("div");
+      controls.style.cssText =
+        "margin-top:14px;font:600 12.5px/1.6 system-ui,sans-serif;color:rgba(140,230,255,0.75)";
+      controls.textContent =
+        "MOVE — steer the swarm · HOLD — compress (fast, dense, EMP-risky) · TAP — scatter (escape EMP)";
+      card.appendChild(controls);
+    }
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "▶ RELEASE THE SWARM";
+    btn.style.cssText =
+      "margin-top:22px;padding:14px 30px;font:800 17px/1 system-ui,sans-serif;" +
+      "letter-spacing:0.06em;color:#04121c;background:linear-gradient(90deg,#00e0ff,#59c4ff);" +
+      "border:none;border-radius:999px;cursor:pointer;" +
+      "box-shadow:0 0 26px rgba(0,224,255,0.45)";
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      startSim();
+    });
+    card.appendChild(btn);
+
+    if (seen) {
+      /* kompakt sürüm: başlık + buton; herhangi bir dokunuş da başlatır */
+      const tapHint = document.createElement("div");
+      tapHint.style.cssText =
+        "margin-top:10px;font:500 12px/1.4 system-ui,sans-serif;color:rgba(160,200,255,0.55)";
+      tapHint.textContent = "tap anywhere to begin";
+      card.appendChild(tapHint);
+      overlay.addEventListener("click", () => startSim());
+    }
+
+    overlay.appendChild(card);
+    container.appendChild(overlay);
+  }
+  showOnboarding();
+
   /* ---------- loop ---------- */
 
   const clock = new THREE.Clock();
@@ -829,6 +1072,12 @@ export function createGame(
     requestAnimationFrame(tick);
     const dt = Math.min(clock.getDelta(), 0.05);
     const t = clock.elapsedTime;
+
+    /* onboarding: sim duraklı — arena perdelerin arkasında nefes alır */
+    if (!started) {
+      composer.render();
+      return;
+    }
 
     /* degrade ölçümü: 2 sn pencerede ortalama frame > 22ms → %20 küçült */
     if (!over) {
@@ -1035,21 +1284,67 @@ export function createGame(
     if (n > peakSwarm) peakSwarm = n;
 
     /* ---------- matris yazımı (tek geçiş, doğrudan array) ---------- */
+    /* Her instance hız vektörüne hizalanır: uzatılmış gövde +Z kolonuyla
+     * ileri bakar → sürü, akan bir dron filosu gibi okunur. Renk: hızlı
+     * agent cian, yavaş koyu mavi — kütlenin iç yapısı görünür olur. */
     const matArr = droneMesh.instanceMatrix.array as Float32Array;
+    const colArr = colorAttr.array as Float32Array;
     const mScale = 0.16 * (compress ? 0.85 : 1);
+    /* hız gradyanı uç renkleri: yavaş koyu mavi → hızlı cian */
+    const slowR = 0.10, slowG = 0.30, slowB = 1.0;
+    const fastR = 0.30, fastG = 1.0, fastB = 1.0;
     for (let i = 0; i < swarmCount; i++) {
       const o = i * 16;
-      matArr[o] = mScale;
-      matArr[o + 5] = mScale;
-      matArr[o + 10] = mScale;
+      /* basis: forward = vel normalize, up ≈ (0,1,0) ortogonalize, right = up×fwd */
+      let fx = velX[i];
+      let fy = velY[i];
+      let fz = velZ[i];
+      const fl = Math.sqrt(fx * fx + fy * fy + fz * fz) + 1e-5;
+      fx /= fl;
+      fy /= fl;
+      fz /= fl;
+      let ux = -fx * fy;
+      let uy = 1 - fy * fy;
+      let uz = -fy * fz;
+      const ul = Math.sqrt(ux * ux + uy * uy + uz * uz) + 1e-5;
+      ux /= ul;
+      uy /= ul;
+      uz /= ul;
+      const rx = uy * fz - uz * fy;
+      const ry = uz * fx - ux * fz;
+      const rz = ux * fy - uy * fx;
+      matArr[o] = rx * mScale;
+      matArr[o + 1] = ry * mScale;
+      matArr[o + 2] = rz * mScale;
+      matArr[o + 3] = 0;
+      matArr[o + 4] = ux * mScale;
+      matArr[o + 5] = uy * mScale;
+      matArr[o + 6] = uz * mScale;
+      matArr[o + 7] = 0;
+      matArr[o + 8] = fx * mScale;
+      matArr[o + 9] = fy * mScale;
+      matArr[o + 10] = fz * mScale;
+      matArr[o + 11] = 0;
       matArr[o + 12] = posX[i];
       matArr[o + 13] =
         posY[i] + Math.sin(t * 2.6 + phase[i]) * 0.35; // bob
       matArr[o + 14] = posZ[i];
       matArr[o + 15] = 1;
+
+      /* hız → renk (kare hızı min speed ile karıştır) */
+      const ratio = Math.min(
+        1,
+        (velX[i] * velX[i] + velY[i] * velY[i] + velZ[i] * velZ[i]) /
+          (MAX_SP * MAX_SP),
+      );
+      const c = i * 3;
+      colArr[c] = slowR + (fastR - slowR) * ratio;
+      colArr[c + 1] = slowG + (fastG - slowG) * ratio;
+      colArr[c + 2] = slowB + (fastB - slowB) * ratio;
     }
     droneMesh.count = swarmCount;
     droneMesh.instanceMatrix.needsUpdate = true;
+    colorAttr.needsUpdate = true;
 
     /* sürü ışığı — kütle ne kadar büyükse zemin o kadar parlar */
     swarmLight.position.x = centroidX;
@@ -1073,11 +1368,12 @@ export function createGame(
         c.mat.opacity = 0.7 + Math.sin(t * 3.5 + c.x * 0.7) * 0.25;
 
         /* sürü teması → çözülmeye başla */
-        if (swarmCount > 0 && queryCount(c.x, c.z, 1.2) > 0) {
+        if (swarmCount > 0 && queryCount(c.x, c.z, 1.6) > 0) {
           c.state = "dissolve";
           c.t = 1.5;
           c.pending = CLUSTER_DRONES;
           absorbed++;
+          spawnRipple(c.x, c.z); // cian şok dalgası — "yutuldu" geri bildirimi
           hooks.onPopup?.("ABSORBED +150");
           sfx.gulp();
         }
@@ -1100,6 +1396,29 @@ export function createGame(
         if (c.t <= 0) respawnCluster(c);
       }
     }
+
+    /* çekirdek feneri — sürüye en yakın dolaşan çekirdek parlar */
+    {
+      let bd = 30 * 30;
+      let bx = 0;
+      let bz = 0;
+      let found = false;
+      for (const c of clusters) {
+        if (c.state !== "roam") continue;
+        const dx = c.x - centroidX;
+        const dz = c.z - centroidZ;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < bd) {
+          bd = d2;
+          bx = c.x;
+          bz = c.z;
+          found = true;
+        }
+      }
+      coreLight.position.set(bx, 2.2, bz);
+      coreLight.intensity += ((found ? 26 : 0) - coreLight.intensity) * Math.min(1, dt * 4);
+    }
+    updateRipples(dt);
 
     /* ---------- security drones ---------- */
     {
@@ -1126,7 +1445,7 @@ export function createGame(
           s.killT += dt;
           while (s.killT >= 0.35) {
             s.killT -= 0.35;
-            killDrone(j);
+            killDrone(j, "sec"); // kırmızı flaş: "güvenlik yedi" öğrenilir
             s.kills++;
           }
         } else {
@@ -1151,16 +1470,32 @@ export function createGame(
         }
       }
 
-      /* matrisler */
+      /* matrisler — burun sürüye dönük (rastgele spin yok: tehdit yönü okunur) */
       let w = 0;
+      let nearestSecD2 = 1e9;
+      let nearestSecX = 0;
+      let nearestSecZ = 0;
       for (const s of secDrones) {
         if (!s.alive) continue;
-        tmpMat.makeRotationY(s.yaw + t * 2);
+        tmpMat.makeRotationY(s.yaw);
         tmpMat.setPosition(s.x, 1.2 + Math.sin(t * 4 + s.x) * 0.2, s.z);
         secMesh.setMatrixAt(w++, tmpMat);
+        const dx = s.x - centroidX;
+        const dz = s.z - centroidZ;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < nearestSecD2) {
+          nearestSecD2 = d2;
+          nearestSecX = s.x;
+          nearestSecZ = s.z;
+        }
       }
       secMesh.count = w;
       secMesh.instanceMatrix.needsUpdate = true;
+
+      /* kırmızı tehdit ışığı en yakın güvenlik drone'unu izler */
+      secLight.position.set(nearestSecX, 2.4, nearestSecZ);
+      secLight.intensity +=
+        ((w > 0 ? 40 : 0) - secLight.intensity) * Math.min(1, dt * 4);
 
       /* dalga sistemi */
       waveT -= dt;
@@ -1173,10 +1508,12 @@ export function createGame(
       }
     }
 
-    /* ---------- EMP döngüsü ---------- */
+    /* ---------- EMP döngüsü (2.5 sn okunur telegraf) ---------- */
     empT -= dt;
     if (empState === "idle") {
-      if (empT <= 1.6) {
+      empWarnRing.visible = false;
+      empPreview.visible = false;
+      if (empT <= 2.5) {
         empState = "warn";
         sfx.empWarn();
       }
@@ -1186,12 +1523,26 @@ export function createGame(
       (bc.material as THREE.MeshBasicMaterial).color.setScalar(
         0.5 + Math.sin(clock.elapsedTime * 25) * 0.5,
       );
+      /* telegraf: yerde maks yarıçap çemberi + geri sayımla genişleyen önizleme */
+      const p = towerPos[empTower];
+      empWarnRing.position.set(p.x, 0.12, p.z);
+      empPreview.position.set(p.x, 0.14, p.z);
+      empWarnRing.visible = true;
+      empPreview.visible = true;
+      warnRingMat.opacity = 0.32 + Math.sin(clock.elapsedTime * 9) * 0.16;
+      previewMat.opacity = 0.42 + Math.sin(clock.elapsedTime * 9) * 0.2;
+      const k = Math.max(
+        0.5,
+        EMP_RADIUS * THREE.MathUtils.clamp(1 - empT / 2.5, 0, 1),
+      );
+      empPreview.scale.setScalar(k);
       if (empT <= 0) {
         empState = "firing";
         empR = 1;
+        empWarnRing.visible = false;
+        empPreview.visible = false;
         sfx.empFire();
         hooks.onPopup?.("EMP!");
-        const p = towerPos[empTower];
         empRing.position.set(p.x, 1.1, p.z);
         empGlow.position.copy(empRing.position);
         empRing.visible = true;
@@ -1250,10 +1601,23 @@ export function createGame(
       bc.scale.setScalar(s);
     }
 
-    /* kamera — ağır, heybetli süzülme */
-    camera.position.x = Math.sin(t * 0.07) * 5;
-    camera.position.z = 64 + Math.sin(t * 0.05) * 3;
-    camera.lookAt(0, 0, -4);
+    /* kamera — sürü merkezini yumuşak takip: kalabalık ekranda büyük kalır,
+     * offset sabitlenir ki arena kenarları hâlâ görünsün */
+    {
+      const camTX =
+        Math.sin(t * 0.07) * 4 +
+        THREE.MathUtils.clamp(centroidX * 0.55, -20, 20);
+      const camTZ =
+        60 +
+        THREE.MathUtils.clamp(centroidZ * 0.5, -18, 18) +
+        Math.sin(t * 0.05) * 2;
+      const lookTX = THREE.MathUtils.clamp(centroidX * 0.7, -32, 32);
+      const lookTZ = THREE.MathUtils.clamp(centroidZ * 0.7, -34, 26) - 4;
+      const k = Math.min(1, dt * 2.4);
+      camera.position.x += (camTX - camera.position.x) * k;
+      camera.position.z += (camTZ - camera.position.z) * k;
+      camera.lookAt(lookTX, 0, lookTZ);
+    }
 
     /* ---------- HUD ~10Hz ---------- */
     reportT += dt;
@@ -1265,6 +1629,46 @@ export function createGame(
         lastReported = sc;
         hooks.onScore?.(sc);
       }
+      swarmLabelEl.textContent = `🐜 SWARM ${swarmCount.toLocaleString("en-US")}`;
+      scoreEl.textContent = `⭐ ${sc.toLocaleString("en-US")}`;
+
+      /* bağlama göre yönerge: EMP > güvenlik teması > çekirdek > kontrol ipucu */
+      if (empState === "warn") {
+        directiveEl.textContent = "⚠ EMP INCOMING — SCATTER or FLEE";
+        directiveEl.style.color = "#ff5cb0";
+      } else if (empState === "firing") {
+        directiveEl.textContent = "⚠ EMP — GET OUT OF THE RING";
+        directiveEl.style.color = "#ff5cb0";
+      } else {
+        let secD = 1e9;
+        for (const s of secDrones) {
+          if (!s.alive) continue;
+          const dx = s.x - centroidX;
+          const dz = s.z - centroidZ;
+          const d2 = dx * dx + dz * dz;
+          if (d2 < secD) secD = d2;
+        }
+        let coreD = 1e9;
+        for (const c of clusters) {
+          if (c.state !== "roam") continue;
+          const dx = c.x - centroidX;
+          const dz = c.z - centroidZ;
+          const d2 = dx * dx + dz * dz;
+          if (d2 < coreD) coreD = d2;
+        }
+        if (secD < 20 * 20) {
+          directiveEl.textContent = "⚠ SECURITY CONTACT — they eat drones";
+          directiveEl.style.color = "#ff8899";
+        } else if (coreD < 28 * 28) {
+          directiveEl.textContent = "🟪 ABSORB the violet core";
+          directiveEl.style.color = "#c9b0ff";
+        } else {
+          directiveEl.textContent =
+            "MOVE to steer · HOLD to compress · TAP to scatter";
+          directiveEl.style.color = "rgba(220,240,255,0.9)";
+        }
+      }
+
       if (!bestBeaten && hooks.best && hooks.best > 0 && sc > hooks.best) {
         bestBeaten = true;
         hooks.onPopup?.("🏆 NEW BEST!");
@@ -1336,6 +1740,11 @@ export function createGame(
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerCancel);
       hintEl.remove();
+      statusEl.remove();
+      if (overlayEl) {
+        overlayEl.remove();
+        overlayEl = null;
+      }
       scene.traverse((o) => {
         const mesh = o as THREE.Mesh;
         if (mesh.isMesh || (o as THREE.LineSegments).isLineSegments) {
@@ -1372,6 +1781,15 @@ export function createGame(
       ringGlowMat.dispose();
       cursorGeo.dispose();
       cursorMat.dispose();
+      warnRingGeo.dispose();
+      warnRingMat.dispose();
+      previewGeo.dispose();
+      previewMat.dispose();
+      haloGeo.dispose();
+      for (const m of ripples) m.material.dispose();
+      rippleGeo.dispose();
+      secLight.dispose();
+      coreLight.dispose();
       cellCounts.fill(0);
       order.fill(0);
       composer.dispose();
