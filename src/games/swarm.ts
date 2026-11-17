@@ -132,6 +132,15 @@ const sfx = {
     tone(150, 1.6, "sine", 0.2, 24);
   },
   best: () => tone(660, 0.4, "triangle", 0.15, 990),
+  knightFall: () => {
+    tone(320, 0.9, "sine", 0.22, 40);
+    noiseBurst(0.5, 0.2, 500, "lowpass");
+  },
+  enfShot: () => tone(90, 0.25, "square", 0.22, 40),
+  enfDown: () => {
+    tone(140, 1.1, "sawtooth", 0.26, 30);
+    noiseBurst(0.7, 0.25, 400, "lowpass");
+  },
 };
 
 /* ---------- game ---------- */
@@ -788,6 +797,571 @@ export function createGame(
   cursor.rotation.x = -Math.PI / 2;
   scene.add(cursor);
 
+  /* ---------- karakter birimleri — prosedürel neon humanoidler ---------- */
+
+  /* Mind Knights (oyuncunun avatarları) + Enforcers (mekân yürüyücüler).
+   * Tek paylaşılan rig geo havuzu (bellek disiplini), birim başına ayrı
+   * malzemeler; sniper'daki prosedürel humanoid deseninin uyarlaması.
+   * Rig ~1.6u boyundadır — grup ölçeği tür başına yüksekliği verir. */
+  const unitGeo = {
+    torso: new THREE.CylinderGeometry(0.17, 0.13, 0.62, 8),
+    head: new THREE.BoxGeometry(0.26, 0.3, 0.3),
+    visor: new THREE.BoxGeometry(0.2, 0.055, 0.04),
+    core: new THREE.SphereGeometry(0.1, 12, 10),
+    arm: new THREE.CylinderGeometry(0.055, 0.042, 0.56, 6),
+    leg: new THREE.CylinderGeometry(0.075, 0.055, 0.6, 6),
+    aura: new THREE.RingGeometry(1.05, 1.22, 40),
+  };
+
+  type Rig = ReturnType<typeof buildHumanoid>;
+
+  function buildHumanoid(cfg: {
+    scale: number; // yükseklik ölçeği (2.6u şövalye / 3.2u enforcer)
+    bulk: number; // x/z genişleme — enforcer mekân hacmi
+    body: number;
+    bodyGlow: number;
+    visor: number;
+  }) {
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: cfg.body,
+      emissive: cfg.bodyGlow,
+      emissiveIntensity: 0.3,
+      roughness: 0.42,
+      metalness: 0.7,
+      envMapIntensity: 0.55,
+    });
+    const visorMat = new THREE.MeshBasicMaterial({ color: cfg.visor });
+    const coreMat = new THREE.MeshBasicMaterial({ color: cfg.visor });
+
+    const root = new THREE.Group();
+    root.scale.setScalar(cfg.scale);
+    root.rotation.order = "YXZ"; // yaw sonra pitch — yüzüstü düşme doğru okunur
+
+    const torso = new THREE.Group();
+    torso.position.y = 0.62;
+    root.add(torso);
+    const torsoMesh = new THREE.Mesh(unitGeo.torso, bodyMat);
+    torsoMesh.position.y = 0.31;
+    torsoMesh.scale.set(cfg.bulk, 1, cfg.bulk * 0.85);
+    torso.add(torsoMesh);
+
+    const head = new THREE.Mesh(unitGeo.head, bodyMat);
+    head.position.y = 0.82;
+    head.scale.set(cfg.bulk, 1, 1);
+    torso.add(head);
+    const visor = new THREE.Mesh(unitGeo.visor, visorMat);
+    visor.position.set(0, 0.02, 0.15 + 0.03 * cfg.bulk);
+    head.add(visor);
+
+    /* çekirdek reaktör — parlak göğüs küresi (telegraf / canlılık sinyali) */
+    const core = new THREE.Mesh(unitGeo.core, coreMat);
+    core.position.set(0, 0.36, 0.15 + 0.06 * cfg.bulk);
+    torso.add(core);
+
+    const arms: THREE.Group[] = [];
+    const legs: THREE.Group[] = [];
+    for (let s = 0; s < 2; s++) {
+      const side = s === 0 ? -1 : 1;
+      const arm = new THREE.Group();
+      arm.position.set(side * (0.19 + 0.09 * cfg.bulk), 0.46, 0);
+      arm.rotation.z = side * 0.09;
+      const armMesh = new THREE.Mesh(unitGeo.arm, bodyMat);
+      armMesh.position.y = -0.28;
+      armMesh.scale.set(cfg.bulk, 1, cfg.bulk);
+      arm.add(armMesh);
+      torso.add(arm);
+      arms.push(arm);
+
+      const leg = new THREE.Group();
+      leg.position.set(side * (0.11 + 0.05 * cfg.bulk), 0.62, 0);
+      const legMesh = new THREE.Mesh(unitGeo.leg, bodyMat);
+      legMesh.position.y = -0.3;
+      legMesh.scale.set(cfg.bulk, 1, cfg.bulk);
+      leg.add(legMesh);
+      root.add(leg);
+      legs.push(leg);
+    }
+
+    return {
+      group: root,
+      torso,
+      head,
+      visor,
+      core,
+      arms,
+      legs,
+      bodyMat,
+      visorMat,
+      coreMat,
+    };
+  }
+
+  /* şövalye + enforcer takip ışıkları — drone başına ışık yok: pahalı */
+  const knightLight = new THREE.PointLight(0x00e0ff, 0, 30, 1.6);
+  const enfLight = new THREE.PointLight(0xff2244, 0, 34, 1.6);
+  scene.add(knightLight, enfLight);
+
+  /* --- Mind Knights: sürünün İÇİNDE yürüyen 6 avatar --- */
+
+  const KNIGHT_N = 6;
+  interface Knight {
+    rig: Rig;
+    ring: THREE.Mesh;
+    ringMat: THREE.MeshBasicMaterial;
+    x: number;
+    z: number;
+    vx: number;
+    vz: number;
+    yaw: number;
+    offA: number; // kişisel dolaşım ofseti (sürekli sürüklenir)
+    offR: number;
+    offSpd: number;
+    walkPh: number;
+    hp: number; // güvenlik temasına karşı 3 HP
+    alive: boolean;
+    hitCd: number;
+    deadT: number;
+  }
+  const knights: Knight[] = [];
+  for (let i = 0; i < KNIGHT_N; i++) {
+    const rig = buildHumanoid({
+      scale: 1.63, // 2.6u uzun, ince — "bilinç avatarı" silueti
+      bulk: 1,
+      body: 0x0d2030,
+      bodyGlow: 0x0a4a5c,
+      visor: 0x6df2ff,
+    });
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0x00e0ff,
+      transparent: true,
+      opacity: 0.35,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const ring = new THREE.Mesh(unitGeo.aura, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.05;
+    rig.group.add(ring);
+    const a = (i / KNIGHT_N) * Math.PI * 2;
+    rig.group.position.set(Math.cos(a) * 5, 0, Math.sin(a) * 5);
+    scene.add(rig.group);
+    knights.push({
+      rig,
+      ring,
+      ringMat,
+      x: Math.cos(a) * 5,
+      z: Math.sin(a) * 5,
+      vx: 0,
+      vz: 0,
+      yaw: 0,
+      offA: a,
+      offR: 3 + Math.random() * 4.5,
+      offSpd: (Math.random() < 0.5 ? -1 : 1) * (0.2 + Math.random() * 0.3),
+      walkPh: Math.random() * 6,
+      hp: 3,
+      alive: true,
+      hitCd: 0,
+      deadT: 0,
+    });
+  }
+
+  /* --- Enforcers: kulelerden çıkan 3 mekân yürüyücüsü --- */
+
+  const ENFORCER_N = 3;
+  const BOLT_N = 8;
+  const ENFORCER_HP = 40;
+  interface Enforcer {
+    rig: Rig;
+    x: number;
+    z: number;
+    yaw: number;
+    walkPh: number;
+    hp: number;
+    alive: boolean;
+    fireT: number; // atış temposu (2s)
+    teleT: number; // 0.5s kırmızı telegraf (>0 → çekirdek parlar)
+    deadT: number;
+  }
+  const enforcers: Enforcer[] = [];
+  for (let i = 0; i < ENFORCER_N; i++) {
+    const rig = buildHumanoid({
+      scale: 2.0, // 3.2u hantal karanlık mekân
+      bulk: 1.6,
+      body: 0x14101c,
+      bodyGlow: 0x3a0a14,
+      visor: 0xff2244,
+    });
+    rig.group.visible = false;
+    scene.add(rig.group);
+    enforcers.push({
+      rig,
+      x: 0,
+      z: 0,
+      yaw: 0,
+      walkPh: 0,
+      hp: ENFORCER_HP,
+      alive: false,
+      fireT: 2,
+      teleT: 0,
+      deadT: 0,
+    });
+  }
+
+  function spawnEnforcer() {
+    for (const e of enforcers) {
+      if (e.alive) continue;
+      const p = towerPos[Math.floor(Math.random() * towerPos.length)];
+      e.x = p.x + (Math.random() - 0.5) * 4;
+      e.z = p.z + (Math.random() - 0.5) * 4;
+      e.yaw = 0;
+      e.walkPh = 0;
+      e.hp = ENFORCER_HP;
+      e.alive = true;
+      e.fireT = 2;
+      e.teleT = 0;
+      e.deadT = 0;
+      e.rig.group.visible = true;
+      e.rig.group.rotation.set(0, 0, 0);
+      e.rig.coreMat.color.setHex(0xff2244);
+      e.rig.visorMat.color.setHex(0xff2244);
+      e.rig.bodyMat.emissiveIntensity = 0.3;
+      hooks.onPopup?.("⚠ ENFORCER DEPLOYED");
+      return;
+    }
+  }
+
+  function knightDie(k: Knight) {
+    if (!k.alive) return;
+    k.alive = false;
+    k.deadT = 0;
+    knightsLost++;
+    knightFlashT = 2.4;
+    k.ring.visible = false;
+    /* beyaz flaş — ruhun söndüğü an */
+    for (let i = 0; i < 3; i++) {
+      spawnDeath(
+        k.x + (Math.random() - 0.5) * 0.8,
+        1.2 + Math.random() * 1.8,
+        k.z + (Math.random() - 0.5) * 0.8,
+        3, 3, 3,
+        7,
+      );
+    }
+    sfx.knightFall();
+  }
+
+  function enforcerDie(e: Enforcer) {
+    e.alive = false;
+    e.deadT = 0;
+    enforcerKills++;
+    hooks.onPopup?.("ENFORCER DOWN +300");
+    sfx.enfDown();
+    for (let i = 0; i < 6; i++) {
+      spawnDeath(
+        e.x + (Math.random() - 0.5) * 2,
+        0.8 + Math.random() * 2.8,
+        e.z + (Math.random() - 0.5) * 2,
+        1.0, 0.18, 0.55, // magenta patlaması
+        3.4,
+      );
+    }
+  }
+
+  /* --- enforcer kırmızı bolt havuzu --- */
+
+  const boltGeo = new THREE.BoxGeometry(0.18, 0.18, 1.5);
+  interface Bolt {
+    mesh: THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicMaterial>;
+    active: boolean;
+    x: number;
+    y: number;
+    z: number;
+    vx: number;
+    vz: number;
+    tx: number;
+    tz: number;
+    life: number;
+  }
+  const bolts: Bolt[] = [];
+  for (let i = 0; i < BOLT_N; i++) {
+    const mat = new THREE.MeshBasicMaterial({ color: 0xff2244 });
+    const mesh = new THREE.Mesh(boltGeo, mat);
+    mesh.visible = false;
+    scene.add(mesh);
+    bolts.push({
+      mesh,
+      active: false,
+      x: 0, y: 0, z: 0,
+      vx: 0, vz: 0,
+      tx: 0, tz: 0,
+      life: 0,
+    });
+  }
+
+  function fireBolt(e: Enforcer) {
+    for (const b of bolts) {
+      if (b.active) continue;
+      b.active = true;
+      b.x = e.x;
+      b.y = 1.9;
+      b.z = e.z;
+      /* hafif yayılmış hedef: sürü merkezi civarı */
+      b.tx = centroidX + (Math.random() - 0.5) * 6;
+      b.tz = centroidZ + (Math.random() - 0.5) * 6;
+      const dx = b.tx - b.x;
+      const dz = b.tz - b.z;
+      const d = Math.sqrt(dx * dx + dz * dz) + 1e-5;
+      b.vx = (dx / d) * 30;
+      b.vz = (dz / d) * 30;
+      b.life = 0;
+      b.mesh.visible = true;
+      b.mesh.position.set(b.x, b.y, b.z);
+      b.mesh.rotation.y = Math.atan2(b.vx, b.vz);
+      sfx.enfShot();
+      return;
+    }
+  }
+
+  function updateKnights(dt: number, t: number) {
+    for (let i = 0; i < knights.length; i++) {
+      const k = knights[i];
+      const rig = k.rig;
+      if (!k.alive) {
+        /* ölüm: çömelme + çekirdek sönerek titrer */
+        k.deadT += dt;
+        const f = Math.min(1, k.deadT / 0.7);
+        rig.group.rotation.x = f * 0.55;
+        rig.group.position.y = -0.35 * f;
+        rig.torso.rotation.x = f * 0.35;
+        rig.legs[0].rotation.x = f * 0.9;
+        rig.legs[1].rotation.x = f * 0.25;
+        if (k.deadT < 1.1) {
+          const flick =
+            Math.random() < 0.45
+              ? 0.04
+              : Math.max(0.05, 1.3 * (1 - k.deadT / 1.1));
+          rig.coreMat.color.setRGB(0.1 * flick, 0.85 * flick, 1 * flick);
+          rig.visorMat.color.setScalar(Math.max(0.05, flick * 0.8));
+        } else {
+          rig.coreMat.color.setRGB(0.02, 0.06, 0.08);
+          rig.visorMat.color.setScalar(0.04);
+          rig.bodyMat.emissiveIntensity = 0.05;
+        }
+        continue;
+      }
+      k.hitCd = Math.max(0, k.hitCd - dt);
+
+      /* hedef: sürü merkezi + sürüklenen kişisel ofset */
+      k.offA += k.offSpd * dt;
+      const tx = centroidX + Math.cos(k.offA) * k.offR;
+      const tz = centroidZ + Math.sin(k.offA) * k.offR;
+      const dx = tx - k.x;
+      const dz = tz - k.z;
+      const d = Math.sqrt(dx * dx + dz * dz) + 1e-5;
+      const spd = Math.min(4.6, d * 1.1);
+      k.vx += ((dx / d) * spd - k.vx) * Math.min(1, dt * 2.2);
+      k.vz += ((dz / d) * spd - k.vz) * Math.min(1, dt * 2.2);
+      k.x = THREE.MathUtils.clamp(k.x + k.vx * dt, -ARENA_HALF, ARENA_HALF);
+      k.z = THREE.MathUtils.clamp(k.z + k.vz * dt, -ARENA_HALF, ARENA_HALF);
+
+      const mvSpd = Math.sqrt(k.vx * k.vx + k.vz * k.vz);
+      if (mvSpd > 0.4) {
+        const ty = Math.atan2(k.vx, k.vz);
+        let dyy = ty - k.yaw;
+        while (dyy > Math.PI) dyy -= Math.PI * 2;
+        while (dyy < -Math.PI) dyy += Math.PI * 2;
+        k.yaw += dyy * Math.min(1, dt * 6);
+      }
+      k.walkPh += dt * (3 + mvSpd * 1.9);
+
+      /* yürüme: gövde bob + hızla gövde eğilmesi + bacak/kol salınımı */
+      const gait = Math.min(1, mvSpd / 3);
+      const sw = Math.sin(k.walkPh);
+      rig.group.position.set(k.x, Math.abs(sw) * 0.08 * gait, k.z);
+      rig.group.rotation.y = k.yaw;
+      rig.torso.rotation.x = mvSpd * 0.035;
+      rig.legs[0].rotation.x = sw * 0.55 * gait;
+      rig.legs[1].rotation.x = -sw * 0.55 * gait;
+      rig.arms[0].rotation.x = -sw * 0.35 * gait;
+      rig.arms[1].rotation.x = sw * 0.35 * gait;
+      k.ringMat.opacity = 0.3 + Math.sin(t * 2.6 + i * 1.7) * 0.14;
+
+      /* güvenlik teması: temas başına 1 hasar (0.9s beklemeli), 3 HP */
+      if (k.hitCd <= 0) {
+        for (const s of secDrones) {
+          if (!s.alive) continue;
+          const ddx = s.x - k.x;
+          const ddz = s.z - k.z;
+          if (ddx * ddx + ddz * ddz < 1.8 * 1.8) {
+            k.hp--;
+            k.hitCd = 0.9;
+            spawnDeath(k.x, 1.6, k.z, 3, 3, 3, 4); // hasar flaşı
+            sfx.pop();
+            if (k.hp <= 0) knightDie(k);
+            break;
+          }
+        }
+      }
+    }
+
+    /* cyan ışık: hayatta kalan şövalyelerin ortasını izler */
+    let kn = 0;
+    let kx = 0;
+    let kz = 0;
+    for (const k of knights) {
+      if (!k.alive) continue;
+      kn++;
+      kx += k.x;
+      kz += k.z;
+    }
+    if (kn > 0) knightLight.position.set(kx / kn, 2.6, kz / kn);
+    knightLight.intensity +=
+      ((kn > 0 ? 20 : 0) - knightLight.intensity) * Math.min(1, dt * 4);
+  }
+
+  function updateEnforcers(dt: number, t: number) {
+    for (const e of enforcers) {
+      const rig = e.rig;
+      if (e.alive) {
+        /* ağır mekân yürüyüşü: sürü merkezine 2.2 u/s */
+        const dx = centroidX - e.x;
+        const dz = centroidZ - e.z;
+        const d = Math.sqrt(dx * dx + dz * dz) + 1e-5;
+        e.x += (dx / d) * 2.2 * dt;
+        e.z += (dz / d) * 2.2 * dt;
+        const ty = Math.atan2(dx, dz);
+        let dyy = ty - e.yaw;
+        while (dyy > Math.PI) dyy -= Math.PI * 2;
+        while (dyy < -Math.PI) dyy += Math.PI * 2;
+        e.yaw += dyy * Math.min(1, dt * 2.5);
+        e.walkPh += dt * 3.1;
+        const sw = Math.sin(e.walkPh);
+        rig.group.position.set(e.x, Math.abs(sw) * 0.14, e.z);
+        rig.group.rotation.y = e.yaw;
+        rig.group.rotation.z = sw * 0.05; // mekânal yalpalama
+        rig.torso.rotation.x = 0.06;
+        rig.legs[0].rotation.x = sw * 0.45; // piston bacaklar
+        rig.legs[1].rotation.x = -sw * 0.45;
+        rig.arms[0].rotation.x = -sw * 0.25;
+        rig.arms[1].rotation.x = sw * 0.25;
+
+        /* atış döngüsü: 2s tempo, 20u menzil, 0.5s kırmızı telegraf */
+        e.fireT -= dt;
+        if (e.teleT > 0) {
+          e.teleT -= dt;
+          const flare = 2.4 + Math.sin(t * 40) * 0.6;
+          rig.coreMat.color.setRGB(flare, 0.25, 0.4);
+          if (e.teleT <= 0) {
+            fireBolt(e);
+            e.fireT = 2;
+          }
+        } else {
+          const pulse = 0.85 + Math.sin(t * 5 + e.walkPh) * 0.15;
+          rig.coreMat.color.setRGB(pulse, 0.13, 0.2);
+          if (e.fireT <= 0 && d < 20) e.teleT = 0.5;
+        }
+
+        /* COMPRESS: yoğun sürü teması mekânı aşındırır (HP 40) */
+        if (compress) {
+          const crowd = queryCount(e.x, e.z, 1.3);
+          if (crowd > 2) {
+            e.hp -= crowd * dt * 0.55;
+            if (Math.random() < dt * 6) {
+              spawnDeath(
+                e.x + (Math.random() - 0.5) * 1.2,
+                1.5 + Math.random() * 1.6,
+                e.z + (Math.random() - 0.5) * 1.2,
+                1.0, 0.18, 0.55,
+                1.6,
+              );
+            }
+            if (e.hp <= 0) {
+              enforcerDie(e);
+              continue;
+            }
+          }
+        }
+      } else if (rig.group.visible) {
+        /* mekân ölümü: yüzüstü devrilme + çekirdek sönümü */
+        e.deadT += dt;
+        const f = Math.min(1, e.deadT / 0.9);
+        rig.group.rotation.x = f * 1.35;
+        rig.group.position.y = -0.55 * f;
+        if (e.deadT < 0.6) {
+          const flick =
+            Math.random() < 0.4 ? 0.05 : 1.1 * (1 - e.deadT / 0.6);
+          rig.coreMat.color.setRGB(flick, 0.1 * flick, 0.2 * flick);
+        } else {
+          rig.coreMat.color.setRGB(0.03, 0.005, 0.01);
+          rig.visorMat.color.setScalar(0.03);
+          rig.bodyMat.emissiveIntensity = 0.05;
+        }
+      }
+    }
+
+    /* tek kırmızı ışık: sürüye en yakın enforcer'ı izler */
+    let nearestD2 = 1e9;
+    let nx = 0;
+    let nz = 0;
+    let any = false;
+    for (const e of enforcers) {
+      if (!e.alive) continue;
+      any = true;
+      const dx = e.x - centroidX;
+      const dz = e.z - centroidZ;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < nearestD2) {
+        nearestD2 = d2;
+        nx = e.x;
+        nz = e.z;
+      }
+    }
+    if (any) enfLight.position.set(nx, 2.8, nz);
+    enfLight.intensity +=
+      ((any ? 34 : 0) - enfLight.intensity) * Math.min(1, dt * 4);
+  }
+
+  function updateBolts(dt: number) {
+    for (const b of bolts) {
+      if (!b.active) continue;
+      b.life += dt;
+      b.x += b.vx * dt;
+      b.z += b.vz * dt;
+      b.mesh.position.set(b.x, b.y + Math.sin(b.life * 30) * 0.05, b.z);
+      const dx = b.tx - b.x;
+      const dz = b.tz - b.z;
+      const passed = dx * b.vx + dz * b.vz < 0; // hedefi geçti
+      if (dx * dx + dz * dz < 1.44 || passed || b.life > 1.5) {
+        b.active = false;
+        b.mesh.visible = false;
+        /* 2u yarıçapta 8 drone kırmızı flaşla ölür (aşağıdan: swap güvenli) */
+        let n = 0;
+        for (let i = swarmCount - 1; i >= 0 && n < 8; i--) {
+          const ddx = posX[i] - b.x;
+          const ddz = posZ[i] - b.z;
+          if (ddx * ddx + ddz * ddz < 4) {
+            killDrone(i, "sec");
+            n++;
+          }
+        }
+        for (let i = 0; i < 4; i++) {
+          spawnDeath(
+            b.x + (Math.random() - 0.5) * 1.4,
+            0.6 + Math.random() * 1.8,
+            b.z + (Math.random() - 0.5) * 1.4,
+            3, 0.2, 0.3,
+            2.6,
+          );
+        }
+      }
+    }
+  }
+
+  let knightsLost = 0;
+  let knightFlashT = 0;
+  let enforcerKills = 0;
+
   /* ---------- state ---------- */
 
   let goalX = 0; // sürünün gerçek hedefi (gecikmeli yumuşar)
@@ -1011,6 +1585,16 @@ export function createGame(
         ["#00e0ff", "🟦", "Cyan dots — your drones"],
         ["#ff2244", "🟥", "Security drones — they EAT your swarm"],
         ["#8a5cff", "🟪", "Absorb cores — touch one: +150 drones"],
+        [
+          "#00e0ff",
+          "🟦",
+          "Mind Knights — your avatars in the field (they boost nearby drones)",
+        ],
+        [
+          "#ff2244",
+          "🟥",
+          "Enforcers — mech walkers, kill with dense compress",
+        ],
       ];
       for (const [c, dot, label] of rows) {
         const row = document.createElement("div");
@@ -1112,6 +1696,8 @@ export function createGame(
           { label: "🧲", value: `${absorbed} absorbed` },
           { label: "💀", value: `${kills} kills` },
           { label: "⏱", value: `${Math.floor(seconds)}s` },
+          { label: "🛡", value: `${KNIGHT_N - knightsLost}/${KNIGHT_N} knights` },
+          { label: "🟥", value: `${enforcerKills} enforcers down` },
         ]);
       }
       return;
@@ -1119,6 +1705,7 @@ export function createGame(
 
     seconds += dt;
     scatterCd = Math.max(0, scatterCd - dt);
+    knightFlashT = Math.max(0, knightFlashT - dt);
 
     /* COMPRESS algılama: basılı >150ms */
     compress = pointerActive && performance.now() - downT > 150;
@@ -1155,6 +1742,19 @@ export function createGame(
       const x = posX[i];
       const y = posY[i];
       const z = posZ[i];
+
+      /* şövalye aurası: 3u içindeki dronlar hafif hızlanır */
+      let aura = 1;
+      for (let ki = 0; ki < knights.length; ki++) {
+        const kn = knights[ki];
+        if (!kn.alive) continue;
+        const adx = x - kn.x;
+        const adz = z - kn.z;
+        if (adx * adx + adz * adz < 9) {
+          aura = 1.14;
+          break;
+        }
+      }
 
       /* 1) seek — sürü hedefine */
       let dxg = goalX - x;
@@ -1232,6 +1832,12 @@ export function createGame(
       let vx = velX[i] + ax * dt;
       let vy = velY[i] + ay * dt;
       let vz = velZ[i] + az * dt;
+      if (aura > 1) {
+        /* yumuşak aura ivmesi — maxSp clamp yine sınırlar */
+        const push = 1 + 0.55 * dt;
+        vx *= push;
+        vz *= push;
+      }
       const sp2 = vx * vx + vy * vy + vz * vz;
       if (sp2 > maxSp2) {
         const f = maxSp / Math.sqrt(sp2);
@@ -1505,8 +2111,19 @@ export function createGame(
         const count = Math.min(SEC_CAP, 8 + waveNum * 3);
         spawnSecurity(count);
         if (waveNum > 1) hooks.onPopup?.(`WAVE ${waveNum}`);
+        /* dalga 2+: kulelerden enforcer çıkar (aynı anda en fazla 3) */
+        if (waveNum >= 2) {
+          let aliveE = 0;
+          for (const e of enforcers) if (e.alive) aliveE++;
+          if (aliveE < ENFORCER_N) spawnEnforcer();
+        }
       }
     }
+
+    /* ---------- karakter birimleri (şövalyeler + enforcerlar) ---------- */
+    updateKnights(dt, t);
+    updateEnforcers(dt, t);
+    updateBolts(dt);
 
     /* ---------- EMP döngüsü (2.5 sn okunur telegraf) ---------- */
     empT -= dt;
@@ -1571,6 +2188,14 @@ export function createGame(
         const d2 = dx * dx + dz * dz;
         if (d2 > rIn && d2 < rOut) killDrone(i); // aşağıdan yukarı: swap güvenli
       }
+      /* EMP şövalyeleri de tek vuruşta söndürür */
+      for (const k of knights) {
+        if (!k.alive) continue;
+        const dx = k.x - p.x;
+        const dz = k.z - p.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > rIn && d2 < rOut) knightDie(k);
+      }
       if (empR >= EMP_RADIUS) {
         empRing.visible = false;
         empGlow.visible = false;
@@ -1623,7 +2248,7 @@ export function createGame(
     reportT += dt;
     if (reportT > 0.1) {
       reportT = 0;
-      score = absorbed * 10 + kills * 25;
+      score = absorbed * 10 + kills * 25 + enforcerKills * 300;
       const sc = Math.floor(score);
       if (sc !== lastReported) {
         lastReported = sc;
@@ -1639,6 +2264,9 @@ export function createGame(
       } else if (empState === "firing") {
         directiveEl.textContent = "⚠ EMP — GET OUT OF THE RING";
         directiveEl.style.color = "#ff5cb0";
+      } else if (knightFlashT > 0) {
+        directiveEl.textContent = "💀 KNIGHT LOST — your avatar fell";
+        directiveEl.style.color = "#bdf4ff";
       } else {
         let secD = 1e9;
         for (const s of secDrones) {
@@ -1656,7 +2284,18 @@ export function createGame(
           const d2 = dx * dx + dz * dz;
           if (d2 < coreD) coreD = d2;
         }
-        if (secD < 20 * 20) {
+        let enfD = 1e9;
+        for (const e of enforcers) {
+          if (!e.alive) continue;
+          const dx = e.x - centroidX;
+          const dz = e.z - centroidZ;
+          const d2 = dx * dx + dz * dz;
+          if (d2 < enfD) enfD = d2;
+        }
+        if (enfD < 25 * 25) {
+          directiveEl.textContent = "🟥 ENFORCER APPROACHING — compress to crush it";
+          directiveEl.style.color = "#ff8899";
+        } else if (secD < 20 * 20) {
           directiveEl.textContent = "⚠ SECURITY CONTACT — they eat drones";
           directiveEl.style.color = "#ff8899";
         } else if (coreD < 28 * 28) {
@@ -1790,6 +2429,17 @@ export function createGame(
       rippleGeo.dispose();
       secLight.dispose();
       coreLight.dispose();
+      knightLight.dispose();
+      enfLight.dispose();
+      unitGeo.torso.dispose();
+      unitGeo.head.dispose();
+      unitGeo.visor.dispose();
+      unitGeo.core.dispose();
+      unitGeo.arm.dispose();
+      unitGeo.leg.dispose();
+      unitGeo.aura.dispose();
+      boltGeo.dispose();
+      for (const b of bolts) b.mesh.material.dispose();
       cellCounts.fill(0);
       order.fill(0);
       composer.dispose();
