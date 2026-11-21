@@ -448,7 +448,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.6));
   renderer.setSize(Math.max(1, container.clientWidth), Math.max(1, container.clientHeight));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 1.35;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.domElement.style.display = "block";
@@ -456,8 +456,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   container.insertBefore(renderer.domElement, style);
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x080d16);
-  scene.fog = new THREE.FogExp2(0x080d16, 0.016);
+  scene.background = new THREE.Color(0x0e1624);
+  scene.fog = new THREE.FogExp2(0x0e1624, 0.011);
 
   const camera = new THREE.PerspectiveCamera(
     50,
@@ -465,7 +465,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     0.1,
     260,
   );
-  let camHeight = 17;
+  let camHeight = 13;
   let camYaw = -0.42;
   let camPitch = 0.82;
   const camBase = new THREE.Vector3();
@@ -473,7 +473,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   camera.position.set(10, 18, 36);
   camera.lookAt(camLook);
 
-  const sun = new THREE.DirectionalLight(0xffd1a0, 1.5);
+  const sun = new THREE.DirectionalLight(0xffd1a0, 2.6);
   sun.position.set(-26, 34, 20);
   sun.castShadow = true;
   sun.shadow.mapSize.set(mobile ? 1024 : 2048, mobile ? 1024 : 2048);
@@ -488,13 +488,14 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   scene.add(sun);
   scene.add(sun.target);
 
-  const hemi = new THREE.HemisphereLight(0x8fbfff, 0x141922, 0.45);
+  const hemi = new THREE.HemisphereLight(0x8fbfff, 0x253040, 1.05);
   scene.add(hemi);
+  scene.add(new THREE.AmbientLight(0x8fa8c0, 0.4));
 
   // Ground: procedural asphalt only (no procedural architecture).
   const groundTex = ownTex(
     makeCanvasTexture(512, 512, (ctx) => {
-      ctx.fillStyle = "#191f27";
+      ctx.fillStyle = "#2a3340";
       ctx.fillRect(0, 0, 512, 512);
       const img = ctx.getImageData(0, 0, 512, 512);
       for (let i = 0; i < img.data.length; i += 4) {
