@@ -1,73 +1,26 @@
-/** Her oyun için özel çizilmiş neon SVG ikon — emoji yok */
+/** Oyun kartları için çizilmiş ikonlar — emoji yok */
 export function GameIcon({ slug, className }: { slug: string; className?: string }) {
-  if (slug === "swarm") {
+  if (slug === "nexus") {
     return (
       <svg viewBox="0 0 64 64" fill="none" className={className}>
-        {/* sürü kümesi — altıgen düzende akan noktalar */}
-        <path d="M32 6 L54 19 V45 L32 58 L10 45 V19 Z" stroke="#00e0ff" strokeWidth="2.5" opacity="0.9" />
+        {/* dört operatörden oluşan squad + nişan halkası */}
+        <circle cx="32" cy="32" r="22" stroke="#67e8f9" strokeWidth="1.6" opacity="0.55" />
+        <circle cx="32" cy="32" r="13" stroke="#22d3ee" strokeWidth="1" opacity="0.35" strokeDasharray="3 4" />
+        <path d="M32 4 V14 M32 50 V60 M4 32 H14 M50 32 H60" stroke="#67e8f9" strokeWidth="1.8" opacity="0.7" />
         {[
-          [32, 32], [26, 24], [38, 24], [20, 32], [44, 32], [26, 40], [38, 40],
-          [23, 28], [41, 28], [32, 20], [23, 36], [41, 36], [32, 44],
+          [23, 23],
+          [41, 23],
+          [23, 41],
+          [41, 41],
         ].map(([x, y], i) => (
-          <circle key={i} cx={x} cy={y} r={i === 0 ? 3.4 : 2.2 - (i % 3) * 0.4} fill={i === 0 ? "#bff6ff" : "#00e0ff"} />
+          <g key={i}>
+            <circle cx={x} cy={y} r="3.4" fill={i === 0 ? "#e2f9ff" : "#22d3ee"} />
+            <path d={`M${x} ${y + 5} v7`} stroke="#22d3ee" strokeWidth="2.4" strokeLinecap="round" opacity="0.85" />
+          </g>
         ))}
-        {/* devriye */}
-        <circle cx="47" cy="13" r="2.6" fill="#ff2d95" />
-        <circle cx="17" cy="49" r="2" fill="#ff2d95" />
+        <circle cx="32" cy="32" r="1.8" fill="#f8fafc" />
       </svg>
     );
   }
-  if (slug === "runner") {
-    return (
-      <svg viewBox="0 0 64 64" fill="none" className={className}>
-        {/* gemi */}
-        <path d="M40 32 L14 22 L20 32 L14 42 Z" fill="#00e0ff" />
-        <path d="M40 32 L14 22 L20 32 Z" fill="#00e0ff" opacity="0.85" />
-        <circle cx="40" cy="32" r="3.4" fill="#bff6ff" />
-        {/* iz */}
-        <path d="M12 32 H2" stroke="#7c5cff" strokeWidth="2.4" strokeLinecap="round" opacity="0.8" />
-        <path d="M8 26 H-1" stroke="#7c5cff" strokeWidth="2" strokeLinecap="round" opacity="0.5" transform="translate(6 0)" />
-        <path d="M8 38 H1" stroke="#7c5cff" strokeWidth="2" strokeLinecap="round" opacity="0.5" />
-        {/* hız çizgileri */}
-        <path d="M56 24 H46" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" opacity="0.35" />
-        <path d="M58 32 H48" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" opacity="0.5" />
-        <path d="M56 40 H46" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" opacity="0.35" />
-      </svg>
-    );
-  }
-  if (slug === "orbiter") {
-    return (
-      <svg viewBox="0 0 64 64" fill="none" className={className}>
-        <circle cx="32" cy="32" r="13" fill="url(#og)" />
-        <defs>
-          <radialGradient id="og" cx="0.35" cy="0.3">
-            <stop offset="0" stopColor="#00e0ff" />
-            <stop offset="1" stopColor="#7c5cff" />
-          </radialGradient>
-        </defs>
-        <ellipse cx="32" cy="32" rx="24" ry="9" stroke="#00e0ff" strokeWidth="2.4" strokeLinecap="round" transform="rotate(-16 32 32)" />
-        <circle cx="52" cy="26" r="3" fill="#00e0ff" />
-      </svg>
-    );
-  }
-  if (slug === "sniper") {
-    return (
-      <svg viewBox="0 0 64 64" fill="none" className={className}>
-        <circle cx="32" cy="32" r="20" stroke="#ffb347" strokeWidth="2.5" />
-        <circle cx="32" cy="32" r="2.5" fill="#ffb347" />
-        <path d="M32 6 V16 M32 48 V58 M6 32 H16 M48 32 H58" stroke="#ffb347" strokeWidth="2.5" strokeLinecap="round" />
-        {/* mermi düşüş eğrisi */}
-        <path d="M40 18 Q52 22 56 34" stroke="#ffd9a0" strokeWidth="1.8" strokeDasharray="3 3" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  /* stacker */
-  return (
-    <svg viewBox="0 0 64 64" fill="none" className={className}>
-      <rect x="20" y="40" width="26" height="9" rx="2.5" fill="#e879f9" />
-      <rect x="17" y="28" width="30" height="9" rx="2.5" fill="#c026d3" />
-      <rect x="22" y="16" width="20" height="9" rx="2.5" fill="#f0abfc" />
-      <rect x="26" y="6" width="12" height="7" rx="2" fill="#f5d0fe" />
-    </svg>
-  );
+  return null;
 }

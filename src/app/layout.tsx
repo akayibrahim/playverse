@@ -18,7 +18,7 @@ export const metadata: Metadata = {
     template: "%s · Playverse",
   },
   description:
-    "Massive-scale 3D games that run in your browser. Thousands of agents, real-time physics, zero installs.",
+    "NEXUS 2100 — squad tactics in a living megacity. Rigged operators, authored environments, real-time rendering in your browser.",
 };
 
 export const viewport: Viewport = {
