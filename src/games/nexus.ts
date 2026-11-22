@@ -253,12 +253,12 @@ const HUD_CSS = `
   .nx-steptext{font-size:10px;line-height:1.7;}
   .nx-touch{display:block;position:absolute;inset:0;pointer-events:none;}
   .nx-stick{position:absolute;left:20px;bottom:92px;width:104px;height:104px;
-    border:1px solid rgba(140,190,200,.32);border-radius:50%;pointer-events:auto;
+    border:1px solid rgba(140,190,200,.32);border-radius:50%;pointer-events:none;
     background:radial-gradient(circle,rgba(30,64,72,.32),rgba(8,18,24,.5));touch-action:none;}
   .nx-knob{position:absolute;left:50%;top:50%;width:42px;height:42px;margin:-21px;
     border:1px solid rgba(140,220,212,.62);border-radius:50%;
     background:rgba(35,92,92,.5);}
-  .nx-look{position:absolute;right:0;top:0;width:55%;height:78%;pointer-events:auto;touch-action:none;}
+  .nx-look{position:absolute;right:0;top:0;width:55%;height:78%;pointer-events:none;touch-action:none;}
   .nx-lookhint{position:absolute;right:12px;top:44%;font-size:8px;color:#5f7887;
     letter-spacing:.18em;pointer-events:none;}
   .nx-tbtns{position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;
