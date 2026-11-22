@@ -197,7 +197,7 @@ const HUD_CSS = `
   justify-content:center;padding:20px;background:radial-gradient(ellipse at 50% 40%,rgba(9,17,25,.9),rgba(3,6,11,.96));
   pointer-events:none;text-align:center;}
 .nx-panel{width:min(520px,92vw);padding:22px 24px;border:1px solid rgba(122,180,190,.3);
-  pointer-events:auto;
+  pointer-events:none;
   background:linear-gradient(180deg,rgba(10,22,30,.94),rgba(6,12,18,.94));
   box-shadow:0 20px 70px rgba(0,0,0,.55);}
 .nx-kicker{font-size:9px;letter-spacing:.4em;color:#71909f;}
@@ -869,15 +869,20 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   function showBriefing() {
+    const lines = mobile
+      ? "<div><b>MOVE</b> · <em>LEFT DRAG</em> &nbsp; <b>AIM</b> · <em>RIGHT DRAG</em></div>" +
+        "<div><b>FIRE</b> · <em>FIRE BUTTON</em> &nbsp; <b>ADS</b> · <em>ADS BUTTON</em></div>" +
+        "<div><b>RELOAD</b> · <em>RELOAD BUTTON</em></div>"
+      : "<div><b>MOVE</b> · <em>W A S D</em> &nbsp; <b>SPRINT</b> · <em>SHIFT</em></div>" +
+        "<div><b>AIM</b> · <em>MOUSE</em> &nbsp; <b>FIRE</b> · <em>LEFT CLICK</em> &nbsp; <b>ADS</b> · <em>RIGHT CLICK</em></div>" +
+        "<div><b>RELOAD</b> · <em>R</em> &nbsp; <b>RELEASE MOUSE</b> · <em>ESC</em></div>";
     overlay.innerHTML =
       '<div class="nx-panel">' +
       '<div class="nx-kicker">FIELD BRIEFING // OPERATION NIGHTFALL</div>' +
       '<div class="nx-title">NEXUS 2100</div>' +
       '<div class="nx-rule"></div>' +
       '<div class="nx-brief">' +
-      "<div><b>MOVE</b> · <em>W A S D</em> &nbsp; <b>SPRINT</b> · <em>SHIFT</em></div>" +
-      "<div><b>AIM</b> · <em>MOUSE</em> &nbsp; <b>FIRE</b> · <em>LEFT CLICK</em> &nbsp; <b>ADS</b> · <em>RIGHT CLICK</em></div>" +
-      "<div><b>RELOAD</b> · <em>R</em> &nbsp; <b>RELEASE MOUSE</b> · <em>ESC</em></div>" +
+      lines +
       "<div><b>OBJECTIVE</b> · ELIMINATE 5 HOSTILES, THEN REACH EXTRACTION</div>" +
       "</div>" +
       "</div>";
@@ -885,26 +890,47 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   function showTutorial() {
-    const steps = [
-      {
-        num: "01",
-        title: "MOVE",
-        text: "W A S D to move · SHIFT to sprint. Your squad follows you automatically.",
-        keys: ["W", "A", "S", "D", "SHIFT"],
-      },
-      {
-        num: "02",
-        title: "AIM & FIRE",
-        text: "Move mouse to aim · LEFT CLICK to fire · RIGHT CLICK to aim down sights. Click the view to capture the mouse.",
-        keys: ["MOUSE", "LMB FIRE", "RMB ADS", "R RELOAD"],
-      },
-      {
-        num: "03",
-        title: "OBJECTIVE",
-        text: "Eliminate 5 hostiles. Red markers show where they are. Then reach the extraction point.",
-        keys: ["5 HOSTILES", "THEN EXTRACTION"],
-      },
-    ];
+    const steps = mobile
+      ? [
+          {
+            num: "01",
+            title: "MOVE",
+            text: "Drag the LEFT side of the screen to move. Your squad follows you.",
+            keys: ["LEFT DRAG", "MOVE"],
+          },
+          {
+            num: "02",
+            title: "AIM & FIRE",
+            text: "Drag the RIGHT side to aim. Tap FIRE to shoot, ADS to aim down sights.",
+            keys: ["RIGHT DRAG", "FIRE", "ADS", "RELOAD"],
+          },
+          {
+            num: "03",
+            title: "OBJECTIVE",
+            text: "Eliminate 5 hostiles. Red markers show where they are. Then reach extraction.",
+            keys: ["5 HOSTILES", "THEN EXTRACTION"],
+          },
+        ]
+      : [
+          {
+            num: "01",
+            title: "MOVE",
+            text: "W A S D to move · SHIFT to sprint. Your squad follows you automatically.",
+            keys: ["W", "A", "S", "D", "SHIFT"],
+          },
+          {
+            num: "02",
+            title: "AIM & FIRE",
+            text: "Move mouse to aim · LEFT CLICK to fire · RIGHT CLICK to aim down sights. Click the view to capture the mouse.",
+            keys: ["MOUSE", "LMB FIRE", "RMB ADS", "R RELOAD"],
+          },
+          {
+            num: "03",
+            title: "OBJECTIVE",
+            text: "Eliminate 5 hostiles. Red markers show where they are. Then reach the extraction point.",
+            keys: ["5 HOSTILES", "THEN EXTRACTION"],
+          },
+        ];
     const s = steps[tutStep];
     overlay.innerHTML =
       '<div class="nx-panel">' +
