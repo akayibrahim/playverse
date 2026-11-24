@@ -51,7 +51,7 @@ export const CONTRACTS: Contract[] = [
   {
     id: "overwatch",
     n: 3,
-    title: "OVERWATCH",
+    title: "SHEPHERD",
     tag: "Your fireteam pushes down the street. You are the only thing keeping them alive.",
     brief:
       "KESTREL and VOSS are moving to exfil at the far end of the boulevard. Hostiles will pour out of the side streets to pin them down. Watch for laser sights — and for the glint of a counter-sniper hunting you.",

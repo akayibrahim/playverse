@@ -145,6 +145,8 @@ const ZERO = 40;
 const WIND_K = 1.35;
 const BASE_FOV = 62;
 const ZOOMS = [4, 8, 12];
+const ZOOM_MIN = 3;
+const ZOOM_MAX = 14;
 const MAG = 5;
 const BOLT_TIME = 1.15;
 const RELOAD_TIME = 2.6;
@@ -273,7 +275,9 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   let pitch = -0.16;
   let scoped = false;
   let scopeBlend = 0;
-  let zoomI = 1;
+  /** continuous magnification (trackpad / wheel); Z + touch button snap to ZOOMS */
+  let zoom = 8;
+  let zoomTick = 0;
   let ducked = false;
   let duckBlend = 0;
   let breathHeld = false;
@@ -632,7 +636,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
 
   // ------------------------------------------------------------- loading
   hud.overlay.className = "nx-ov load on";
-  hud.overlay.innerHTML = `<div class="nx-load"><div class="nx-kick">OVERWATCH NET // DISTRICT 07</div>
+  hud.overlay.innerHTML = `<div class="nx-load"><div class="nx-kick">MARKSMAN NET // DISTRICT 07</div>
     <div class="nx-h2" style="margin-top:14px">CALIBRATING OPTIC</div>
     <div class="bar"><i></i></div><div class="st"><span>NEST · DISTRICT · SKY</span><span class="pc">0%</span></div>
     <div class="err"></div></div>`;
@@ -1767,18 +1771,18 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   // ------------------------------------------------------------- scope
   function targetFov() {
     if (cam) return camera.fov;
-    return scoped ? BASE_FOV / ZOOMS[zoomI] : BASE_FOV;
+    return scoped ? BASE_FOV / zoom : BASE_FOV;
   }
   let retKey = "";
   function updateReticle() {
-    const key = `${viewW}x${viewH}:${zoomI}`;
+    const key = `${viewW}x${viewH}:${zoom.toFixed(2)}`;
     if (key === retKey) return;
     retKey = key;
     const r = Math.min(viewW, viewH) * 0.46;
     hud.scope.style.setProperty("--sr", `${r}px`);
     const cx = viewW / 2;
     const cy = viewH / 2;
-    const fov = THREE.MathUtils.degToRad(BASE_FOV / ZOOMS[zoomI]);
+    const fov = THREE.MathUtils.degToRad(BASE_FOV / zoom);
     const pxPerRad = viewH / 2 / Math.tan(fov / 2);
     const mil = pxPerRad * 0.001;
     const parts: string[] = [];
@@ -1809,8 +1813,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     }
     parts.push(`<circle cx="${cx}" cy="${cy}" r="1.6" fill="#ff3b48"/>`);
     hud.ret.innerHTML = parts.join("");
-    hud.zoomLbl.textContent = `×${ZOOMS[zoomI]}`;
-    hud.tZoom.textContent = `×${ZOOMS[zoomI]}`;
+    hud.zoomLbl.textContent = `×${zoom.toFixed(zoom < 10 ? 1 : 0)}`;
+    hud.tZoom.textContent = `×${Math.round(zoom)}`;
   }
 
   function setScope(on: boolean) {
@@ -1827,11 +1831,23 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     if (!on && breathHeld) setBreath(false);
     if (on && hintStep === 0) hintStep = 1;
   }
-  function cycleZoom(dir: number) {
-    const n = THREE.MathUtils.clamp(zoomI + dir, 0, ZOOMS.length - 1);
-    if (n === zoomI) return;
-    zoomI = n;
+  /** Next preset step (Z key / touch button), wrapping back to the lowest. */
+  function cycleZoom() {
+    const next = ZOOMS.find((z) => z > zoom + 0.25) ?? ZOOMS[0];
+    zoom = next;
     audio.zoom();
+    if (hintStep === 1) hintStep = 2;
+  }
+  /** Multiplicative zoom from wheel / trackpad scroll / pinch deltas (pixels). */
+  function nudgeZoom(delta: number) {
+    const before = zoom;
+    zoom = THREE.MathUtils.clamp(zoom * Math.exp(-delta * 0.0022), ZOOM_MIN, ZOOM_MAX);
+    if (Math.abs(zoom - before) < 1e-4) return;
+    zoomTick += Math.abs(Math.log(zoom / before));
+    if (zoomTick > 0.18) {
+      zoomTick = 0;
+      audio.zoom();
+    }
     if (hintStep === 1) hintStep = 2;
   }
   function setBreath(on: boolean) {
@@ -2551,7 +2567,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   let bannerTimer = 0;
   function banner(t: string, s: string, alert: boolean) {
     hud.banner.className = "nx-banner on" + (alert ? " alert" : "");
-    (hud.banner.querySelector(".k") as HTMLElement).textContent = alert ? "◆ ALERT" : "◆ OVERWATCH";
+    (hud.banner.querySelector(".k") as HTMLElement).textContent = alert ? "◆ ALERT" : "◆ NEST";
     (hud.banner.querySelector(".t") as HTMLElement).textContent = t;
     (hud.banner.querySelector(".s") as HTMLElement).textContent = s;
     bannerTimer = 3.2;
@@ -2612,7 +2628,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     pitch = -0.16;
     scoped = false;
     ducked = false;
-    zoomI = 1;
+    zoom = 8;
     windT = fx() * 100;
     hud.root.classList.remove("scoped", "ducked", "bulletcam");
     hooks.onScore(0);
@@ -2688,7 +2704,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     hud.overlay.className = "nx-ov menu on";
     const sel = contractById(selected);
     hud.overlay.innerHTML = `<div class="nx-col">
-      <div class="nx-kick">PLAYVERSE // NEXUS 2100 · OVERWATCH</div>
+      <div class="nx-kick">PLAYVERSE // NEXUS 2100 · MARKSMAN</div>
       <div class="nx-h1">LONG<span>SHOT</span></div>
       <div class="nx-sub">One nest. One bolt-action. A hundred metres of rain between you and the contract. Read the wind, hold your breath, lead the walkers.</div>
       <div class="ls-cards">${CONTRACTS.map((c) => {
@@ -2705,7 +2721,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         <span class="nx-best">BEST · <b>${(progress.best[selected] ?? 0).toLocaleString("en-US")}</b></span></div>
       <div class="nx-ctrl">${(mobile
         ? [["LOOK", "DRAG"], ["SCOPE", "SCOPE"], ["FIRE", "FIRE"], ["STEADY", "HOLD BREATH"], ["ZOOM", "×8"], ["COVER", "▾"]]
-        : [["LOOK", "MOUSE"], ["SCOPE", "RMB"], ["FIRE", "LMB"], ["ZOOM", "WHEEL / Z"], ["HOLD BREATH", "SHIFT"], ["COVER", "C"], ["RELOAD", "R"], ["PAUSE", "P / ESC"]]
+        : [["LOOK", "MOUSE"], ["SCOPE", "RMB / Q"], ["FIRE", "LMB / SPACE"], ["ZOOM", "SCROLL · PINCH · Z"], ["HOLD BREATH", "SHIFT"], ["COVER", "C"], ["RELOAD", "R"], ["PAUSE", "P / ESC"]]
       )
         .map(([a, b]) => `<div><span>${a}</span><b>${b}</b></div>`)
         .join("")}</div></div>`;
@@ -2975,7 +2991,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     if (hintStep < 4 && stage === "playing") {
       const tips = mobile
         ? ["<span>TAP <kbd>SCOPE</kbd></span>", "<span><kbd>×8</kbd> ZOOM</span><span>HOLD <kbd>BREATH</kbd> TO STEADY</span>", "<span>USE THE RANGE MARKS TO HOLD OVER · <kbd>FIRE</kbd></span>", ""]
-        : ["<span><kbd>RMB</kbd> SCOPE IN</span>", "<span><kbd>WHEEL</kbd> ZOOM</span><span><kbd>SHIFT</kbd> HOLD BREATH</span>", "<span><kbd>LMB</kbd> FIRE · HOLD OVER WITH THE RANGE MARKS · LEAD WALKERS</span>", ""];
+        : ["<span><kbd>RMB</kbd> / <kbd>Q</kbd> SCOPE IN</span>", "<span><kbd>SCROLL</kbd> / <kbd>PINCH</kbd> ZOOM</span><span><kbd>SHIFT</kbd> HOLD BREATH</span>", "<span><kbd>LMB</kbd> FIRE · HOLD OVER WITH THE RANGE MARKS · LEAD WALKERS</span>", ""];
       const html = tips[Math.min(hintStep, 3)];
       if (hud.hint.innerHTML !== html) hud.hint.innerHTML = html;
       hud.hint.classList.toggle("on", !!html && !cam);
@@ -2999,6 +3015,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     if (stage !== "playing" || document.pointerLockElement !== canvas || cam) return;
     look(e.movementX, e.movementY);
   });
+  let rmbDownAt = 0;
+  let rmbWasScoped = false;
   on(canvas, "mousedown", (e: MouseEvent) => {
     if (mobile || stage !== "playing") return;
     if (document.pointerLockElement !== canvas) {
@@ -3006,17 +3024,39 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       return;
     }
     if (e.button === 0) fire();
-    if (e.button === 2) setScope(true);
+    if (e.button === 2) {
+      // tap = toggle (trackpads), hold = scope while held
+      rmbDownAt = performance.now();
+      rmbWasScoped = scoped;
+      if (!scoped) setScope(true);
+    }
   });
   on(window, "mouseup", (e: MouseEvent) => {
-    if (e.button === 2) setScope(false);
+    if (e.button === 2 && rmbDownAt > 0) {
+      const held = performance.now() - rmbDownAt > 280;
+      rmbDownAt = 0;
+      if (held || rmbWasScoped) setScope(false);
+    }
   });
   on(canvas, "contextmenu", (e: Event) => e.preventDefault());
-  on(canvas, "wheel", (e: WheelEvent) => {
+  // Wheel / trackpad: two-finger scroll and pinch (ctrlKey) both zoom smoothly. A notched mouse
+  // wheel sends ~100 px per click, a trackpad many small deltas — scaling by size handles both.
+  on(container, "wheel", (e: WheelEvent) => {
     if (stage !== "playing") return;
     e.preventDefault();
-    cycleZoom(e.deltaY < 0 ? 1 : -1);
+    let d = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
+    if (e.ctrlKey) d *= 4; // pinch reports small deltas
+    d = THREE.MathUtils.clamp(d, -160, 160);
+    nudgeZoom(d);
   }, { passive: false });
+  // Safari pinch
+  on(container, "gesturestart", (e: Event) => e.preventDefault());
+  on(container, "gesturechange", (e: Event & { scale?: number }) => {
+    if (stage !== "playing" || !e.scale) return;
+    e.preventDefault();
+    const z = THREE.MathUtils.clamp(zoom * Math.pow(e.scale, 0.08), ZOOM_MIN, ZOOM_MAX);
+    zoom = z;
+  });
   on(document, "pointerlockchange", () => {
     if (document.pointerLockElement !== canvas && stage === "playing" && !mobile) pause();
   });
@@ -3042,9 +3082,10 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     if (stage !== "playing") return;
     if (k === "p" || k === "escape") pause();
     if (k === "shift") setBreath(true);
+    if (k === "q") setScope(!scoped);
     if (k === "c" || k === "control") setDuck(!ducked);
     if (k === "r") startReload();
-    if (k === "z") cycleZoom(zoomI === ZOOMS.length - 1 ? -(ZOOMS.length - 1) : 1);
+    if (k === "z") cycleZoom();
     if (k === " ") {
       e.preventDefault();
       fire();
@@ -3109,7 +3150,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     fire();
   }, () => hud.tFire.classList.remove("on"));
   tb(hud.tScope, () => setScope(!scoped));
-  tb(hud.tZoom, () => cycleZoom(zoomI === ZOOMS.length - 1 ? -(ZOOMS.length - 1) : 1));
+  tb(hud.tZoom, () => cycleZoom());
   tb(hud.tReload, () => startReload());
   tb(hud.tBreath, () => setBreath(true), () => setBreath(false));
   tb(hud.tDuck, () => setDuck(!ducked));
@@ -3411,7 +3452,10 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       start: (id: ContractId) => startContract(id),
       god: () => (godMode = true),
       scope: (b: boolean) => setScope(b),
-      zoom: (i: number) => (zoomI = i),
+      zoom: (i: number) => (zoom = ZOOMS[i] ?? i),
+      get zoomLevel() {
+        return zoom;
+      },
       fire: () => fire(),
       duck: (b: boolean) => setDuck(b),
       setWind: (w: number) => {

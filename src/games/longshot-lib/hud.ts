@@ -196,7 +196,7 @@ export function buildLsHud(container: HTMLElement, mobile: boolean) {
       <div class="hb"><i></i></div><div class="cov">POSITION · <b>CONCEALED</b></div><div class="sq"></div></div>
     <div class="ls-ammo nx-panelbg"><div class="nm"><span>VX-9 · MARKSMAN</span><b class="md">BOLT</b></div>
       <div class="rounds"></div><div class="rs"><b class="rv">15</b>RESERVE</div><div class="st"><i></i></div>
-      <div class="ky">RMB SCOPE · WHEEL ZOOM · SHIFT BREATH</div></div>
+      <div class="ky">Q SCOPE · SCROLL ZOOM · SHIFT BREATH</div></div>
     <div class="nx-cross"><i></i><i></i><i></i><i></i><i></i></div>
     <div class="nx-hit"><i></i><i></i><i></i><i></i></div>
     <div class="nx-pops"></div>
