@@ -86,7 +86,7 @@ const VL_CSS = `
   .vl-spd .v{top:40px;font-size:38px;}
   .vl-spd .u{top:80px;}
   .vl-map{display:none;}
-  .vl-pos{top:8px;right:calc(108px + env(safe-area-inset-right));}
+  .vl-pos{top:8px;right:calc(150px + env(safe-area-inset-right));}
   .vl-pos .p{font-size:34px;}
   .vl-pos .l{display:none;}
   .vl-lap{left:calc(10px + env(safe-area-inset-left));top:8px;min-width:150px;padding:6px 10px;}
