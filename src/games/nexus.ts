@@ -38,7 +38,8 @@ import {
   type Slot,
 } from "./nexus-lib/progress";
 import { getNickname, setNickname } from "@/lib/storage";
-import { asphalt, diamond, flashTex, nameTag, sidewalk, softDot, verticalFade } from "./nexus-lib/textures";
+import { loadPbr, triplanar, type PbrSet, type TriOpts } from "./nexus-lib/surface";
+import { asphalt, diamond, flashTex, nameTag, sidewalk, softDot, verticalFade, wornPaint } from "./nexus-lib/textures";
 
 type RunStat = { label: string; value: string };
 type GameHooks = {
@@ -591,9 +592,38 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   ground.receiveShadow = true;
   scene.add(ground);
 
+  const groundMat = ground.material as THREE.MeshStandardMaterial;
   const swTex = T(sidewalk(rng));
   swTex.repeat.set(1.2, 30);
   const swMat = M(new THREE.MeshStandardMaterial({ map: swTex, roughness: 0.55, metalness: 0.05, envMapIntensity: 0.9 }));
+
+  /** Swap the procedural road/sidewalk for the photo PBR sets once they're in. */
+  function applyGroundPbr(road: PbrSet, pave: PbrSet) {
+    const roadRep = 220 / 3.2;
+    for (const t of [road.diff, road.nor, road.arm]) t.repeat.set(roadRep, roadRep);
+    groundMat.map = road.diff;
+    groundMat.normalMap = road.nor;
+    groundMat.normalScale.set(0.9, 0.9);
+    groundMat.aoMap = road.arm;
+    groundMat.aoMapIntensity = 0.8;
+    groundMat.color.setRGB(0.78, 0.8, 0.86); // cool, rain-dark tint; puddle roughness stays procedural
+    groundMat.needsUpdate = true;
+    // sidewalk box: top face UV spans 3.2m × length
+    const len = 2 * WORLD_HALF + 10;
+    const pv = [pave.diff, pave.nor, pave.arm].map((t) => {
+      const c = T(t.clone());
+      c.repeat.set(3.2 / 2.2, len / 2.2);
+      c.needsUpdate = true;
+      return c;
+    });
+    swMat.map = pv[0];
+    swMat.normalMap = pv[1];
+    swMat.aoMap = pv[2];
+    swMat.roughnessMap = pv[2];
+    swMat.roughness = 0.85;
+    swMat.color.setRGB(0.62, 0.64, 0.7);
+    swMat.needsUpdate = true;
+  }
   const curbMat = M(new THREE.MeshStandardMaterial({ color: 0x8b9096, roughness: 0.6 }));
   const swGeo = G(new THREE.BoxGeometry(3.2, 0.12, 2 * WORLD_HALF + 10));
   const curbGeo = G(new THREE.BoxGeometry(0.2, 0.15, 2 * WORLD_HALF + 10));
@@ -607,7 +637,19 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     curb.receiveShadow = true;
     scene.add(curb);
   }
-  const lineMat = M(new THREE.MeshBasicMaterial({ color: 0xd8d2b4, transparent: true, opacity: 0.55, depthWrite: false }));
+  const lineMat = M(
+    new THREE.MeshStandardMaterial({
+      color: 0xd8d2b4,
+      alphaMap: T(wornPaint(rng)),
+      transparent: true,
+      opacity: 0.8,
+      depthWrite: false,
+      roughness: 0.55,
+      metalness: 0,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+    }),
+  );
   const lineGeo = G(new THREE.PlaneGeometry(0.14, 1.8));
   for (let z = -WORLD_HALF; z <= WORLD_HALF; z += 4.5) {
     const d = new THREE.Mesh(lineGeo, lineMat);
@@ -901,6 +943,32 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     }
   }
 
+  // Flat-colour kit materials → triplanar photo detail, tuned per palette name.
+  const KIT_SURF: Record<string, Partial<TriOpts>> = {
+    LightGrey: {},
+    Grey: {},
+    MetalLight: { rough: [0.25, 0.6] },
+    DarkGrey: { albedo: 0.6, rough: [0.35, 0.75] },
+    Black: { albedo: 0.5, rough: [0.4, 0.8], grime: 0.4 },
+    Orange: { albedo: 0.75, chroma: 0.15, rough: [0.4, 0.85] },
+  };
+  function applyKitSurfaces(env: Array<{ scene: THREE.Group } | null>, set: PbrSet) {
+    const done = new Set<THREE.Material>();
+    for (const g of env) {
+      g?.scene.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+          const sm = m as THREE.MeshStandardMaterial;
+          const cfg = KIT_SURF[sm.name];
+          if (!cfg || done.has(sm) || !sm.isMeshStandardMaterial || sm.map) continue;
+          done.add(sm);
+          triplanar(sm, set, { tile: 2.4, albedo: 0.85, chroma: 0.2, normal: 0.85, rough: [0.3, 0.85], metal: [0.5, 1.1], grime: 1, ...cfg });
+        }
+      });
+    }
+  }
+
   async function boot() {
     const solP = loadGlb("soldier", "models");
     const envP = Promise.all(GLB_ENV.map((n) => loadGlb(n, "env")));
@@ -929,7 +997,17 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         console.error("[NEXUS] mocap failed", err);
         return [] as THREE.AnimationClip[];
       });
-    const [sol, env, , mocap] = await Promise.all([solP, envP, hdrP, mocapP]);
+    const texLoader = new THREE.TextureLoader();
+    const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    const pbrP = Promise.all([
+      loadPbr(texLoader, `${ASSET}/tex/metal_plate_02`, 0.0701, aniso),
+      loadPbr(texLoader, `${ASSET}/tex/asphalt_02`, 0.1021, aniso),
+      loadPbr(texLoader, `${ASSET}/tex/concrete_pavers_02`, 0.1264, aniso),
+    ]).catch((err) => {
+      console.error("[NEXUS] PBR textures failed", err);
+      return null;
+    });
+    const [sol, env, , mocap, pbr] = await Promise.all([solP, envP, hdrP, mocapP, pbrP]);
     if (disposed) return;
     if (!sol) {
       (hud.overlay.querySelector(".err") as HTMLElement).textContent = "CRITICAL ASSET FAULT — SEE CONSOLE";
@@ -938,6 +1016,11 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     soldierSrc = sol.scene;
     clips = [...sol.animations, ...mocap];
     measureRig();
+    if (pbr) {
+      for (const set of pbr) for (const t of [set.diff, set.nor, set.arm]) T(t);
+      applyKitSurfaces(env, pbr[0]);
+      applyGroundPbr(pbr[1], pbr[2]);
+    }
     buildWorld(env.map((g) => g?.scene ?? null));
     void createPhysics().then((p) => {
       if (!p) return;

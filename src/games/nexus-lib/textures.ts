@@ -205,3 +205,58 @@ export function nameTag(text: string, color: string) {
     ctx.fill();
   });
 }
+
+/** Alpha mask for worn road paint: chipped edges, bare patches and hairline cracks. */
+export function wornPaint(rng: () => number) {
+  const S = 256;
+  const tex = canvasTex(
+    S,
+    S,
+    (ctx) => {
+      ctx.fillStyle = "#ececec";
+      ctx.fillRect(0, 0, S, S);
+      ctx.filter = "blur(3px)";
+      for (let i = 0; i < 40; i++) {
+        const r = 6 + rng() * 30;
+        ctx.fillStyle = `rgba(0,0,0,${0.08 + rng() * 0.22})`;
+        ctx.beginPath();
+        ctx.ellipse(rng() * S, rng() * S, r, r * (0.3 + rng() * 0.7), rng() * Math.PI, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.filter = "blur(0.6px)";
+      // tyre-worn bare patches, small chips
+      for (let i = 0; i < 60; i++) {
+        const r = 1 + rng() * 3.5;
+        ctx.fillStyle = `rgba(0,0,0,${0.4 + rng() * 0.4})`;
+        ctx.beginPath();
+        ctx.ellipse(rng() * S, rng() * S, r, r * (0.5 + rng()), rng() * Math.PI, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      for (let i = 0; i < 6; i++) {
+        ctx.lineWidth = 0.5 + rng() * 0.8;
+        ctx.beginPath();
+        let x = rng() * S;
+        let y = rng() * S;
+        ctx.moveTo(x, y);
+        for (let k = 0; k < 5; k++) {
+          x += (rng() - 0.5) * 40;
+          y += (rng() - 0.5) * 40;
+          ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      ctx.filter = "none";
+      // fine grain
+      const img = ctx.getImageData(0, 0, S, S);
+      for (let i = 0; i < img.data.length; i += 4) {
+        const n = (rng() - 0.5) * 36;
+        for (let c = 0; c < 3; c++) img.data[i + c] = Math.max(0, Math.min(255, img.data[i + c] + n));
+      }
+      ctx.putImageData(img, 0, 0);
+    },
+    false,
+  );
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}

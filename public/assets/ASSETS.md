@@ -70,3 +70,15 @@ per-bone rest direction alignment, hips translation scaled by hip height). Clip 
 `death_a` (Death01), `death_b` (Death01 mirrored), `death_c` (LayToIdle reversed), `hit_chest`,
 `hit_head`, `knockback`, `crouch_idle`, `crouch_walk`, `throw` (OverhandThrow), `takedown`
 (Melee_Hook), `getup` (LayToIdle), `roll`. Only the 22 body bones are keyed (no fingers).
+
+## PBR textures (Poly Haven, CC0 1.0)
+
+1k JPG maps from the Poly Haven API, re-encoded to WebP (q82) in `tex/`. `-diff` = Diffuse, `-nor` = nor_gl, `-arm` = AO/Rough/Metal.
+
+| File prefix | Source | License |
+| --- | --- | --- |
+| `tex/asphalt_02-*` | https://polyhaven.com/a/asphalt_02 | CC0 1.0 |
+| `tex/concrete_pavers_02-*` | https://polyhaven.com/a/concrete_pavers_02 | CC0 1.0 |
+| `tex/metal_plate_02-*` | https://polyhaven.com/a/metal_plate_02 | CC0 1.0 |
+
+The kit models have no UVs, so `metal_plate_02` is projected triplanar in world space (`src/games/nexus-lib/surface.ts`).
