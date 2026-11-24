@@ -1,173 +1,159 @@
 import Link from "next/link";
 import Image from "next/image";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { GameGrid } from "@/components/GameGrid";
+import { GAMES } from "@/lib/games";
 
 export default function Home() {
+  const live = GAMES.filter((g) => g.status === "live");
+  const latest = live[live.length - 1];
+
   return (
     <main className="relative flex-1">
       {/* Nav */}
       <nav className="sticky top-0 z-20 backdrop-blur-md bg-background/70 border-b border-surface-border">
         <div className="mx-auto max-w-6xl px-5 h-14 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2.5">
-            <Image
-              src="/logo.svg"
-              alt="Playverse"
-              width={26}
-              height={26}
-              className="drop-shadow-[0_0_8px_rgba(0,224,255,0.5)]"
-            />
+            <Image src="/logo.svg" alt="Playverse" width={26} height={26} className="drop-shadow-[0_0_8px_rgba(0,224,255,0.5)]" />
             <span className="font-extrabold tracking-[0.16em] text-sm uppercase">
               Play<span className="neon-text">verse</span>
             </span>
-            <span className="hidden md:inline text-[10px] text-faint uppercase tracking-[0.2em] border-l border-surface-border pl-3 ml-1">
-              interactive systems lab
-            </span>
           </Link>
-          <div className="flex items-center gap-4">
-            <span className="hidden sm:block text-[10px] text-faint tracking-[0.18em] uppercase">
-              WebGL2 · real-time · no install
-            </span>
+          <div className="flex items-center gap-5">
+            <a href="#games" className="hidden sm:block text-[11px] uppercase tracking-[0.18em] text-muted hover:text-foreground transition">
+              Games
+            </a>
+            <a href="#studio" className="hidden sm:block text-[11px] uppercase tracking-[0.18em] text-muted hover:text-foreground transition">
+              Studio
+            </a>
             <ThemeToggle />
           </div>
         </div>
       </nav>
 
-      {/* Hero */}
+      {/* Hero — the studio, not a single game */}
       <section className="relative overflow-hidden border-b border-surface-border">
-        {/* grid teknesi — sakin, teknik bir zemin */}
-        <div className="pointer-events-none absolute inset-0 opacity-[0.16]" aria-hidden>
-          <div
-            className="absolute inset-0"
-            style={{
-              backgroundImage:
-                "linear-gradient(to right, var(--grid-line) 1px, transparent 1px), linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px)",
-              backgroundSize: "64px 64px",
-              maskImage:
-                "radial-gradient(ellipse 70% 60% at 50% 40%, black, transparent)",
-              WebkitMaskImage:
-                "radial-gradient(ellipse 70% 60% at 50% 40%, black, transparent)",
-            }}
-          />
+        <div className="pointer-events-none absolute inset-0" aria-hidden>
+          {live.map((g, i) => (
+            <div key={g.slug} className="pv-slide absolute inset-0" style={{ animationDelay: `${-i * 8}s` }}>
+              <Image src={g.cover} alt="" fill priority={i === 0} sizes="100vw" className="object-cover object-[70%_50%] opacity-70" />
+            </div>
+          ))}
+          <div className="absolute inset-0 bg-gradient-to-r from-background via-background/85 to-background/10" />
+          <div className="absolute inset-0 bg-gradient-to-t from-background via-transparent to-background/50" />
+        </div>
+        <div className="relative mx-auto max-w-6xl px-5 pt-24 pb-24 sm:pt-32 sm:pb-28">
+          <div className="flex items-center gap-3 text-[10px] uppercase tracking-[0.28em] text-cyan-400 font-semibold">
+            <span className="h-px w-8 bg-cyan-400/60" />
+            Browser game studio
+          </div>
+          <h1 className="mt-6 max-w-3xl text-5xl sm:text-7xl font-black tracking-[-0.045em] leading-[0.95]">
+            Games from <span className="neon-text">2100</span>.
+          </h1>
+          <p className="mt-7 max-w-xl text-base sm:text-lg leading-relaxed text-muted">
+            Cinematic real-time 3D games set in one rain-soaked megacity. They run right here in your browser — no install, no
+            account, no waiting.
+          </p>
+          <div className="mt-10 flex flex-wrap items-center gap-3">
+            <a
+              href="#games"
+              className="rounded-sm px-8 py-4 font-bold text-xs uppercase tracking-[0.18em] bg-cyan-400 text-slate-950 hover:bg-cyan-300 shadow-[0_0_36px_rgba(34,211,238,0.25)] active:scale-[0.98] transition"
+            >
+              Browse games ↓
+            </a>
+            <Link
+              href={`/games/${latest.slug}`}
+              className="rounded-sm px-8 py-4 font-semibold text-xs uppercase tracking-[0.18em] text-foreground border border-surface-border hover:border-cyan-400/50 active:scale-[0.98] transition"
+            >
+              New · Play {latest.title} ▸
+            </Link>
+          </div>
+          <dl className="mt-14 grid grid-cols-2 sm:grid-cols-4 gap-px max-w-2xl border border-surface-border bg-surface-border font-mono">
+            {[
+              [String(live.length), "games live"],
+              ["60 fps", "WebGL2 · PBR · HDRI"],
+              ["0 MB", "to install"],
+              ["Desktop", "+ mobile touch"],
+            ].map(([v, k]) => (
+              <div key={k} className="bg-background/80 px-4 py-3">
+                <dt className="text-lg font-bold tracking-tight text-foreground">{v}</dt>
+                <dd className="mt-0.5 text-[10px] uppercase tracking-[0.16em] text-faint">{k}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      </section>
+
+      {/* Games — equal billing, real in-game shots */}
+      <section id="games" className="mx-auto max-w-6xl px-5 pt-20 scroll-mt-16">
+        <div className="flex items-end justify-between gap-6 mb-8">
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-400 font-semibold">Now playing</div>
+            <h2 className="mt-2 text-2xl sm:text-3xl font-extrabold tracking-tight">Two ways into District 07.</h2>
+          </div>
+          <span className="hidden sm:block text-[10px] uppercase tracking-[0.2em] text-faint">Captured in-engine</span>
         </div>
 
-        <div className="relative mx-auto max-w-6xl px-5 pt-20 pb-20 grid gap-12 lg:grid-cols-[1.2fr_0.8fr] lg:items-center">
-          <div>
-            <div className="flex items-center gap-3 text-[10px] uppercase tracking-[0.28em] text-cyan-400 font-semibold">
-              <span className="h-px w-8 bg-cyan-400/60" />
-              Project 01 · Tactical simulation
-            </div>
-
-            <h1 className="mt-6 text-6xl sm:text-8xl font-black tracking-[-0.05em] leading-[0.92]">
-              NEXUS
-              <br />
-              <span className="text-muted font-extrabold">2100</span>
-            </h1>
-
-            <p className="mt-7 max-w-xl text-base sm:text-lg leading-relaxed text-muted">
-              Command a four-operator strike team in a living megacity. Rigged,
-              animated operatives. Real environments. Cover, suppression and
-              extraction — every shot has weight.
-            </p>
-
-            <div className="mt-10 flex flex-wrap items-center gap-3">
-              <Link
-                href="/games/nexus"
-                className="rounded-sm px-8 py-4 font-bold text-xs uppercase tracking-[0.18em]
-                  bg-cyan-400 text-slate-950 hover:bg-cyan-300
-                  shadow-[0_0_36px_rgba(34,211,238,0.25)]
-                  active:scale-[0.98] transition"
-              >
-                ▶ Deploy now
-              </Link>
-              <a
-                href="#briefing"
-                className="rounded-sm px-8 py-4 font-semibold text-xs uppercase tracking-[0.18em]
-                  text-muted border border-surface-border hover:border-cyan-400/50 hover:text-foreground
-                  active:scale-[0.98] transition"
-              >
-                Read the briefing
-              </a>
-            </div>
-          </div>
-
-          {/* sistem paneli */}
-          <div className="card rounded-sm p-6 font-mono text-[11px] leading-relaxed border-surface-border">
-            <div className="flex items-center justify-between pb-4 border-b border-surface-border">
-              <span className="uppercase tracking-[0.2em] text-faint">System status</span>
-              <span className="flex items-center gap-2 text-cyan-400">
-                <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
-                ONLINE
-              </span>
-            </div>
-            <dl className="mt-4 space-y-3">
-              {[
-                ["Simulation", "NEXUS / district 07"],
-                ["Operators", "4 · rigged + animated"],
-                ["Environment", "authored modular geometry"],
-                ["Lighting", "HDRI · PBR · dynamic shadows"],
-                ["Input", "mouse + keyboard / touch"],
-                ["Build", "0.1.0 · browser native"],
-              ].map(([k, v]) => (
-                <div key={k} className="flex justify-between gap-6">
-                  <dt className="text-faint uppercase tracking-wider">{k}</dt>
-                  <dd className="text-right text-foreground/90">{v}</dd>
+        <div className="grid gap-6 lg:grid-cols-2">
+          {live.map((g) => (
+            <Link
+              key={g.slug}
+              href={`/games/${g.slug}`}
+              className="group relative overflow-hidden rounded-sm border border-surface-border bg-black aspect-[4/5] sm:aspect-[16/11] flex flex-col justify-end"
+              style={{ ["--ac" as string]: g.accent }}
+            >
+              <Image
+                src={g.cover}
+                alt={`${g.title} in-game`}
+                fill
+                sizes="(min-width:1024px) 560px, 100vw"
+                className="object-cover transition-transform duration-[1200ms] ease-out group-hover:scale-[1.06]"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black via-black/35 via-45% to-black/0" />
+              <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/60 to-transparent" />
+              <div className="absolute top-4 left-4 right-4 flex items-center justify-between">
+                <span className="rounded-full border border-white/20 bg-black/40 backdrop-blur px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/90">
+                  {g.genre}
+                </span>
+                {g.slug === latest.slug && live.length > 1 && (
+                  <span className="rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-black" style={{ background: g.accent }}>
+                    New
+                  </span>
+                )}
+              </div>
+              <div className="relative p-6 sm:p-7">
+                <h3 className="text-3xl sm:text-4xl font-black tracking-[-0.03em] text-white">{g.title}</h3>
+                <p className="mt-3 max-w-md text-sm leading-relaxed text-white/75">{g.pitch}</p>
+                <ul className="mt-4 flex flex-wrap gap-2">
+                  {g.features.map((f) => (
+                    <li key={f} className="border border-white/15 bg-white/5 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-white/80">
+                      {f}
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-6 flex items-center gap-4">
+                  <span
+                    className="inline-flex items-center gap-2 rounded-sm px-6 py-3 text-xs font-bold uppercase tracking-[0.18em] text-black transition group-hover:brightness-110"
+                    style={{ background: g.accent, boxShadow: `0 0 30px ${g.accent}40` }}
+                  >
+                    ▶ Play now
+                  </span>
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-white/50">Free · in browser</span>
                 </div>
-              ))}
-            </dl>
-            <div className="mt-6 pt-4 border-t border-surface-border text-[10px] text-faint">
-              Rendering starts on deployment. No account, no download.
-            </div>
-          </div>
+              </div>
+            </Link>
+          ))}
         </div>
       </section>
 
-      {/* Games */}
-      <section id="games" className="mx-auto max-w-6xl px-5 pt-16">
-        <div className="mb-8">
-          <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-400 font-semibold">
-            Playable now
-          </div>
-          <h2 className="mt-2 text-2xl sm:text-3xl font-extrabold tracking-tight">
-            Two ways into District 07.
-          </h2>
-        </div>
-        <GameGrid />
-      </section>
-
-      {/* Briefing */}
-      <section id="briefing" className="mx-auto max-w-6xl px-5 pt-16 pb-20">
-        <div className="flex items-end justify-between mb-8">
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-400 font-semibold">
-              Mission brief
-            </div>
-            <h2 className="mt-2 text-2xl sm:text-3xl font-extrabold tracking-tight">
-              Built like a simulation, not a toy.
-            </h2>
-          </div>
-          <Link href="/games/nexus" className="hidden sm:block text-xs text-muted hover:text-cyan-400 transition">
-            Enter the field →
-          </Link>
-        </div>
-
+      {/* Studio pillars */}
+      <section id="studio" className="mx-auto max-w-6xl px-5 pt-20 pb-20 scroll-mt-16">
+        <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-400 font-semibold">The studio</div>
+        <h2 className="mt-2 mb-8 text-2xl sm:text-3xl font-extrabold tracking-tight">Built like games, not demos.</h2>
         <div className="grid gap-px bg-surface-border border border-surface-border sm:grid-cols-3">
           {[
-            [
-              "01",
-              "Real operators",
-              "Rigged, animated human characters with locomotion states. They move, take cover and fall — no floating capsules.",
-            ],
-            [
-              "02",
-              "Living district",
-              "Authored modular city geometry, proper materials, HDRI light and real-time shadows. The city is a tactical space.",
-            ],
-            [
-              "03",
-              "Consequence",
-              "Line of sight, cover, ammo and wounded operators. Extraction is the objective — not a high-score grind.",
-            ],
+            ["01", "Real engines, in a tab", "Physically based materials, HDRI lighting, real-time shadows, ragdoll physics and motion-captured animation — streamed into the browser."],
+            ["02", "One city, many stories", "Every game shares District 07: the same rain, the same neon, the same streets — seen from a fireteam or a sniper nest."],
+            ["03", "Made to be replayed", "Stars, medals, ranks and daily operations. Short sessions with real decisions, on desktop or phone."],
           ].map(([n, title, body]) => (
             <div key={n} className="bg-background p-6 sm:p-7">
               <div className="font-mono text-[11px] text-cyan-400">{n}</div>
@@ -178,25 +164,8 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Deploy */}
-      <section className="border-t border-surface-border">
-        <div className="mx-auto max-w-6xl px-5 py-16 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.28em] text-faint">District 07 awaits</div>
-            <p className="mt-2 text-xl font-bold tracking-tight">Your squad is ready.</p>
-          </div>
-          <Link
-            href="/games/nexus"
-            className="rounded-sm px-8 py-4 font-bold text-xs uppercase tracking-[0.18em]
-              bg-cyan-400 text-slate-950 hover:bg-cyan-300 active:scale-[0.98] transition"
-          >
-            ▶ Deploy now
-          </Link>
-        </div>
-      </section>
-
       <footer className="border-t border-surface-border py-8 text-center text-[10px] uppercase tracking-[0.2em] text-faint">
-        Playverse · games from tomorrow · v1.0
+        Playverse · games from tomorrow
       </footer>
     </main>
   );

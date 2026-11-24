@@ -5,6 +5,12 @@ export type GameMeta = {
   emoji: string;
   gradient: string;
   status: "live" | "soon";
+  /** vitrin (ana sayfa) */
+  genre: string;
+  cover: string;
+  pitch: string;
+  features: string[];
+  accent: string;
 };
 
 /**
@@ -20,6 +26,11 @@ export const GAMES: GameMeta[] = [
     emoji: "🎖",
     gradient: "from-slate-500/50 to-cyan-700/40",
     status: "live",
+    genre: "Squad tactical shooter",
+    cover: "/assets/promo/nexus.webp",
+    pitch: "Lead a three-operator fireteam down a rain-soaked boulevard. Clear the street, hold the uplink, get out alive.",
+    features: ["Mocap + ragdoll physics", "Two districts", "Daily ops · global board"],
+    accent: "#67e8f9",
   },
   {
     slug: "longshot",
@@ -28,6 +39,11 @@ export const GAMES: GameMeta[] = [
     emoji: "🎯",
     gradient: "from-amber-500/40 to-slate-700/50",
     status: "live",
+    genre: "Marksman",
+    cover: "/assets/promo/longshot.webp",
+    pitch: "A nest twelve metres up, a bolt-action and a hundred metres of rain. Read the wind, lead the walkers, take the shot.",
+    features: ["Real ballistics · drop + wind", "Bullet cam", "Three contracts"],
+    accent: "#fbbf24",
   },
 ];
 
