@@ -1,6 +1,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { GameGrid } from "@/components/GameGrid";
 
 export default function Home() {
   return (
@@ -119,6 +120,19 @@ export default function Home() {
             </div>
           </div>
         </div>
+      </section>
+
+      {/* Games */}
+      <section id="games" className="mx-auto max-w-6xl px-5 pt-16">
+        <div className="mb-8">
+          <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-400 font-semibold">
+            Playable now
+          </div>
+          <h2 className="mt-2 text-2xl sm:text-3xl font-extrabold tracking-tight">
+            Two ways into District 07.
+          </h2>
+        </div>
+        <GameGrid />
       </section>
 
       {/* Briefing */}
