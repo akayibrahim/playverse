@@ -22,5 +22,21 @@ export function GameIcon({ slug, className }: { slug: string; className?: string
       </svg>
     );
   }
+  if (slug === "longshot") {
+    return (
+      <svg viewBox="0 0 64 64" fill="none" className={className}>
+        {/* dürbün: mil çizgileri + düşüş işaretleri, ortada hedef silüeti */}
+        <circle cx="32" cy="32" r="24" stroke="#fbbf24" strokeWidth="1.8" opacity="0.7" />
+        <path d="M8 32 H25 M39 32 H56 M32 8 V25 M32 39 V56" stroke="#fde68a" strokeWidth="1.6" opacity="0.85" />
+        <path d="M32 25 V39 M25 32 H39" stroke="#fef3c7" strokeWidth="0.8" />
+        {[0, 1, 2].map((i) => (
+          <path key={i} d={`M${29 - i} ${36 + i * 3} H${35 + i}`} stroke="#fde68a" strokeWidth="0.9" opacity="0.8" />
+        ))}
+        <circle cx="40.5" cy="21" r="2.3" fill="#f87171" />
+        <path d="M40.5 24 v6" stroke="#f87171" strokeWidth="2.6" strokeLinecap="round" />
+        <circle cx="32" cy="32" r="1.3" fill="#ef4444" />
+      </svg>
+    );
+  }
   return null;
 }

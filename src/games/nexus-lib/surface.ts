@@ -130,3 +130,51 @@ vec3 nxTri(sampler2D t) { return texture2D(t, nxUX).rgb * nxW.x + texture2D(t, n
   mat.customProgramCacheKey = () => "nx-tri";
   mat.needsUpdate = true;
 }
+
+/** Flat-colour kit materials → triplanar photo detail, tuned per palette name. */
+export const KIT_SURF: Record<string, Partial<TriOpts>> = {
+  LightGrey: {},
+  Grey: {},
+  MetalLight: { rough: [0.25, 0.6] },
+  DarkGrey: { albedo: 0.6, rough: [0.35, 0.75] },
+  Black: { albedo: 0.5, rough: [0.4, 0.8], grime: 0.4 },
+  Orange: { albedo: 0.75, chroma: 0.15, rough: [0.4, 0.85] },
+};
+
+export function applyKitSurfaces(roots: Array<THREE.Object3D | null | undefined>, set: PbrSet) {
+  const done = new Set<THREE.Material>();
+  for (const r of roots) {
+    r?.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+        const sm = m as THREE.MeshStandardMaterial;
+        const cfg = KIT_SURF[sm.name];
+        if (!cfg || done.has(sm) || !sm.isMeshStandardMaterial || sm.map) continue;
+        done.add(sm);
+        triplanar(sm, set, { tile: 2.4, albedo: 0.85, chroma: 0.2, normal: 0.85, rough: [0.3, 0.85], metal: [0.5, 1.1], grime: 1, ...cfg });
+      }
+    });
+  }
+}
+
+/** Saturated sign colours in the kit become emissive neon. */
+export function glowNeon(root: THREE.Object3D) {
+  const hsl = { h: 0, s: 0, l: 0 };
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const m of mats) {
+      const sm = m as THREE.MeshStandardMaterial;
+      if (!sm.color || !sm.emissive || sm.userData.nxGlow) continue;
+      sm.userData.nxGlow = true;
+      sm.color.getHSL(hsl);
+      const neonHue = hsl.h > 0.72 || hsl.h < 0.02 || (hsl.h > 0.42 && hsl.h < 0.58) || (hsl.h > 0.12 && hsl.h < 0.2);
+      if (hsl.s > 0.6 && hsl.l > 0.42 && neonHue) {
+        sm.emissive.copy(sm.color);
+        sm.emissiveIntensity = 0.85;
+      }
+    }
+  });
+}

@@ -286,6 +286,43 @@ export function createAudio() {
       burst({ dur: 0.35, type: "lowpass", freq: 1400, freqEnd: 200, gain: g, pan, send: 0.9 });
       osc({ type: "sine", f0: 90, f1: 32, dur: 0.4, gain: g * 0.9, pan });
     },
+    /** Player's bolt-action: supersonic crack, chest-thump, and the shot rolling down the street. */
+    marksman() {
+      burst({ dur: 0.025, type: "highpass", freq: 3800, gain: 0.85, send: 0.2 });
+      burst({ dur: 0.3, type: "bandpass", freq: 900, freqEnd: 180, q: 0.5, gain: 0.9, send: 0.8 });
+      osc({ type: "sine", f0: 120, f1: 30, dur: 0.38, gain: 1.0 });
+      burst({ dur: 0.12, type: "lowpass", freq: 500, gain: 0.55, brown: true });
+      // canyon echoes
+      burst({ dur: 0.5, type: "lowpass", freq: 1100, freqEnd: 260, gain: 0.22, send: 1, delay: 0.21 });
+      burst({ dur: 0.7, type: "lowpass", freq: 700, freqEnd: 160, gain: 0.14, send: 1, delay: 0.52, pan: -0.4 });
+      burst({ dur: 0.9, type: "lowpass", freq: 520, freqEnd: 120, gain: 0.09, send: 1, delay: 0.95, pan: 0.5 });
+    },
+    /** Distant flesh hit heard through the scope. */
+    thwack(dist: number) {
+      const g = 0.32 / (1 + dist * 0.025);
+      burst({ dur: 0.09, type: "lowpass", freq: 420, gain: g, brown: true, send: 0.3 });
+      burst({ dur: 0.03, type: "bandpass", freq: 1800, q: 1.5, gain: g * 0.4 });
+    },
+    breath(hold: boolean) {
+      if (hold) burst({ dur: 0.55, type: "bandpass", freq: 900, freqEnd: 1500, q: 0.7, gain: 0.07, attack: 0.25 });
+      else burst({ dur: 0.8, type: "bandpass", freq: 1300, freqEnd: 600, q: 0.6, gain: 0.09, attack: 0.05 });
+    },
+    heartbeat(k: number) {
+      osc({ type: "sine", f0: 66, f1: 38, dur: 0.15, gain: 0.3 * k });
+      osc({ type: "sine", f0: 60, f1: 34, dur: 0.17, gain: 0.22 * k, delay: 0.19 });
+    },
+    scope(on: boolean) {
+      burst({ dur: 0.05, type: "bandpass", freq: on ? 2600 : 2000, q: 3, gain: 0.12 });
+      burst({ dur: 0.12, type: "lowpass", freq: 600, gain: 0.1, brown: true, delay: 0.03 });
+    },
+    zoom() {
+      for (let i = 0; i < 3; i++) osc({ type: "square", f0: 3100, f1: 3000, dur: 0.012, gain: 0.04, delay: i * 0.035 });
+    },
+    /** Time-dilation whoosh for the bullet cam. */
+    slowmo() {
+      burst({ dur: 1.4, type: "lowpass", freq: 1800, freqEnd: 120, gain: 0.35, send: 0.9, attack: 0.04, brown: true });
+      osc({ type: "sine", f0: 220, f1: 40, dur: 1.2, gain: 0.25, send: 0.6 });
+    },
     explode(dist: number, pan: number) {
       const g = 0.9 / (1 + dist * 0.05);
       burst({ dur: 0.9, type: "lowpass", freq: 900, freqEnd: 80, gain: g, pan, send: 0.8, brown: true });

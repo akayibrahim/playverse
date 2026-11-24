@@ -21,6 +21,14 @@ export const GAMES: GameMeta[] = [
     gradient: "from-slate-500/50 to-cyan-700/40",
     status: "live",
   },
+  {
+    slug: "longshot",
+    title: "LONGSHOT",
+    tagline: "One nest, one bolt-action, a hundred metres of rain. Read the wind.",
+    emoji: "🎯",
+    gradient: "from-amber-500/40 to-slate-700/50",
+    status: "live",
+  },
 ];
 
 export function getGame(slug: string): GameMeta | undefined {
