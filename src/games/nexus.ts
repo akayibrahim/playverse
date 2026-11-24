@@ -21,6 +21,7 @@ import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { createAudio } from "./nexus-lib/audio";
 import { createPhysics, type Physics, type Prop, type Ragdoll } from "./nexus-lib/physics";
 import { copyImage, downloadBlob, renderCard, shareCard, type CardData } from "./nexus-lib/share";
+import { createMusic } from "./nexus-lib/music";
 import { buildHud, esc } from "./nexus-lib/hud";
 import { GradeShader } from "./nexus-lib/grade";
 import { buildRifle, createRifleParts, rotateBoneWorld, solveArm, type Rifle } from "./nexus-lib/rig";
@@ -377,7 +378,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     listeners.push(() => el.removeEventListener(type, fn, opts));
   };
 
-  const settings = store(SETTINGS_KEY, { sens: 1, vol: 0.8, muted: false });
+  const settings = store(SETTINGS_KEY, { sens: 1, vol: 0.8, muted: false, music: 0.6 });
+  if (typeof settings.music !== "number") settings.music = 0.6;
   let firstRun = true;
   try {
     firstRun = localStorage.getItem(SEEN_KEY) !== "1";
@@ -523,6 +525,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
   const audio = createAudio();
   audio.setVolume(settings.muted ? 0 : settings.vol);
+  audio.setMusicVolume(settings.music);
 
   // ----------------------------------------------------------- renderer
   const renderer = new THREE.WebGLRenderer({ antialias: mobile, powerPreference: "high-performance", alpha: false });
@@ -2128,6 +2131,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   function advancePhase() {
+    audio.musicRiser();
     bonus += 250;
     if (phaseDamage === 0) medal("untouchable");
     phaseDamage = 0;
@@ -2150,6 +2154,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   function finishMission(won: boolean) {
     if (stage !== "playing") return;
     endKillcam();
+    audio.musicStinger(won);
     success = won;
     stage = "dead"; // short cinematic hold before the debrief
     deathTimer = 0;
@@ -2828,6 +2833,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     dir.normalize();
     hud.root.classList.add("killcam");
     audio.whiz(0);
+    audio.musicDuck(true);
     return true;
   }
 
@@ -2836,6 +2842,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     killcam = null;
     timeScale = 1;
     hud.root.classList.remove("killcam");
+    audio.musicDuck(false);
   }
 
   const kcPos = new THREE.Vector3();
@@ -4045,16 +4052,18 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
 
   function settingsHtml() {
     return `<div class="nx-set"><label><span>SENSITIVITY</span><input type="range" min="0.3" max="2.5" step="0.05" value="${settings.sens}" data-set="sens"><span>${settings.sens.toFixed(2)}</span></label>
-      <label><span>VOLUME</span><input type="range" min="0" max="1" step="0.05" value="${settings.vol}" data-set="vol"><span>${Math.round(settings.vol * 100)}</span></label></div>`;
+      <label><span>VOLUME</span><input type="range" min="0" max="1" step="0.05" value="${settings.vol}" data-set="vol"><span>${Math.round(settings.vol * 100)}</span></label>
+      <label><span>MUSIC</span><input type="range" min="0" max="1" step="0.05" value="${settings.music}" data-set="music"><span>${Math.round(settings.music * 100)}</span></label></div>`;
   }
 
   function bindSettings() {
     hud.overlay.querySelectorAll<HTMLInputElement>("input[data-set]").forEach((inp) => {
       inp.addEventListener("input", () => {
         const v = parseFloat(inp.value);
-        const key = inp.dataset.set as "sens" | "vol";
+        const key = inp.dataset.set as "sens" | "vol" | "music";
         settings[key] = v;
-        (inp.nextElementSibling as HTMLElement).textContent = key === "vol" ? String(Math.round(v * 100)) : v.toFixed(2);
+        (inp.nextElementSibling as HTMLElement).textContent = key === "sens" ? v.toFixed(2) : String(Math.round(v * 100));
+        if (key === "music") audio.setMusicVolume(v);
         if (key === "vol") {
           settings.muted = v === 0;
           audio.setVolume(v);
@@ -5073,6 +5082,23 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     progGeo.setDrawRange(0, Math.floor(uplink * 96) * 6);
   }
 
+  /** Score intensity: calm patrol → alert → firefight → uplink climax. */
+  function musicLevel() {
+    if (stage === "menu" || stage === "loading") return 0;
+    if (stage === "dead") return success ? 0.3 : 0.05;
+    let combat = 0;
+    let aware = false;
+    for (const e of enemies) {
+      if (!e.alive) continue;
+      if (e.state === "combat") combat++;
+      else if (e.awareness > 0.25) aware = true;
+    }
+    if (phase === 3 && uplinkStarted) return 0.96;
+    if (combat > 0) return Math.min(0.9, 0.58 + combat * 0.05 + (lastHurt < 2 ? 0.06 : 0));
+    if (aware || pendingWave) return 0.36;
+    return 0.14;
+  }
+
   function tick(now: number) {
     if (disposed) return;
     raf = requestAnimationFrame(tick);
@@ -5168,6 +5194,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       updateFx(realDt);
       updateRain(realDt);
       updateExtraction(realDt, t);
+      audio.music(musicLevel());
       audio.update(realDt);
     }
     if (simulate) {
@@ -5231,6 +5258,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         grenades = 2;
       },
       nades,
+      createMusic,
       get takedown() {
         return takedownTarget ? soldiers.indexOf(takedownTarget) : -1;
       },

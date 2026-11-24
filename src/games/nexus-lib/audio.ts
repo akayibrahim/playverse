@@ -32,6 +32,8 @@ type OscOpts = {
   delay?: number;
 };
 
+import { createMusic, type Music } from "./music";
+
 export type AudioEngine = ReturnType<typeof createAudio>;
 
 export function createAudio() {
@@ -47,6 +49,8 @@ export function createAudio() {
   let sirenTimer = 9;
   let heartTimer = 0;
   let lowHp = 0;
+  let music: Music | null = null;
+  let musicVol = 0.6;
 
   function makeNoise(c: AudioContext, seconds: number, kind: "white" | "brown") {
     const n = Math.floor(c.sampleRate * seconds);
@@ -115,6 +119,9 @@ export function createAudio() {
       reverbIn.connect(conv);
       white = makeNoise(c, 2, "white");
       brown = makeNoise(c, 4, "brown");
+      music = createMusic(c, master, reverbIn, white);
+      music.setVolume(musicVol);
+      if (musicVol > 0) music.start();
     } catch {
       ctx = null;
     }
@@ -221,8 +228,28 @@ export function createAudio() {
     setLowHp(v: number) {
       lowHp = v;
     },
+    setMusicVolume(v: number) {
+      musicVol = v;
+      if (!music) return;
+      music.setVolume(v);
+      if (v > 0) music.start();
+      else music.stop();
+    },
+    music(intensity: number) {
+      music?.setIntensity(intensity);
+    },
+    musicDuck(on: boolean) {
+      music?.setDuck(on);
+    },
+    musicRiser() {
+      if (ctx?.state === "running") music?.riser();
+    },
+    musicStinger(win: boolean) {
+      if (ctx?.state === "running") music?.stinger(win);
+    },
     update(dt: number) {
       if (!ctx || ctx.state !== "running") return;
+      music?.update(dt);
       sirenTimer -= dt;
       if (sirenTimer <= 0) {
         sirenTimer = 22 + Math.random() * 25;
