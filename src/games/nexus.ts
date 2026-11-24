@@ -424,6 +424,21 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
 
   // --------------------------------------------------------------- HUD
   const hud = buildHud(container, mobile);
+  // Mobile: the page itself must never scroll/bounce under the game.
+  const prevBodyOverflow = document.body.style.overflow;
+  const prevOverscroll = document.documentElement.style.overscrollBehavior;
+  if (mobile) {
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overscrollBehavior = "none";
+  }
+  /** Height of the game hidden behind browser chrome (iOS toolbar) → lift bottom UI by that much. */
+  function updateVisibleBottom() {
+    const vv = window.visualViewport;
+    if (!mobile || !vv) return;
+    const rect = container.getBoundingClientRect();
+    const hidden = Math.max(0, Math.round(rect.bottom - (vv.offsetTop + vv.height)));
+    hud.root.style.setProperty("--vb", `${Math.min(hidden, 160)}px`);
+  }
   const audio = createAudio();
   audio.setVolume(settings.muted ? 0 : settings.vol);
 
@@ -3318,6 +3333,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   function startPlay() {
+    if (mobile) window.scrollTo(0, 0);
+    updateVisibleBottom();
     audio.ensure();
     audio.startAmbient();
     hud.overlay.className = "nx-ov";
@@ -3823,7 +3840,12 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     }
   }
 
+  if (window.visualViewport) {
+    on(window.visualViewport, "resize", () => updateVisibleBottom());
+    on(window.visualViewport, "scroll", () => updateVisibleBottom());
+  }
   const onResize = () => {
+    updateVisibleBottom();
     if (mobile && stage === "playing" && window.innerHeight > window.innerWidth) pause();
     viewW = Math.max(1, container.clientWidth);
     viewH = Math.max(1, container.clientHeight);
@@ -4081,6 +4103,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       composer?.dispose();
       renderer.dispose();
       audio.dispose();
+      document.body.style.overflow = prevBodyOverflow;
+      document.documentElement.style.overscrollBehavior = prevOverscroll;
       hud.root.remove();
       hud.style.remove();
       canvas.remove();

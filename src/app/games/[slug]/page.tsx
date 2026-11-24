@@ -27,7 +27,7 @@ export default async function GamePage({
   if (!game) notFound();
 
   return (
-    <main className="flex-1 flex flex-col h-[100dvh] min-h-0">
+    <main className="flex-1 flex flex-col h-[calc(100dvh-env(safe-area-inset-top))] min-h-0">
       {/* Üst bar — kısa (yatay telefon) ekranlarda gizlenir, oyun tüm ekranı alır */}
       <header className="flex items-center gap-3 px-4 py-3 [@media(max-height:560px)]:hidden">
         <Link
