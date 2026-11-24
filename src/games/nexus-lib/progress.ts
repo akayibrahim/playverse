@@ -18,7 +18,7 @@ export const RANKS = [
   { name: "COMMANDER", xp: 40000 },
 ];
 
-export type Slot = "optic" | "muzzle" | "mag" | "visor";
+export type Slot = "optic" | "muzzle" | "mag" | "gear" | "visor";
 
 export type Item = { id: string; name: string; desc: string; rank: number };
 
@@ -35,6 +35,10 @@ export const ITEMS: Record<Slot, Item[]> = {
   mag: [
     { id: "std", name: "STANDARD 30", desc: "30 rounds", rank: 0 },
     { id: "ext", name: "EXTENDED 40", desc: "40 rounds · +0.25s reload", rank: 2 },
+  ],
+  gear: [
+    { id: "frag", name: "FRAG ×2", desc: "6 m blast · bounces off walls", rank: 0 },
+    { id: "emp", name: "EMP ×2", desc: "Downs drones · stuns troopers · strips shields", rank: 3 },
   ],
   visor: [
     { id: "cyan", name: "CYAN", desc: "Factory issue", rank: 0 },
@@ -69,6 +73,9 @@ export const MEDALS: Record<string, { name: string; xp: number; icon: string }> 
   giantslayer: { name: "GIANT SLAYER", xp: 200, icon: "▲" },
   countersniper: { name: "COUNTER-SNIPER", xp: 200, icon: "✦" },
   skeet: { name: "SKEET SHOOTER", xp: 120, icon: "✈" },
+  silent: { name: "SILENT TAKEDOWN", xp: 150, icon: "✕" },
+  demolition: { name: "DEMOLITION", xp: 200, icon: "✸" },
+  blackout: { name: "BLACKOUT", xp: 150, icon: "ϟ" },
 };
 
 export type Progress = {
@@ -86,7 +93,7 @@ const DEFAULT: Progress = {
   medals: {},
   runs: 0,
   wins: 0,
-  equip: { optic: "dot", muzzle: "none", mag: "std", visor: "cyan" },
+  equip: { optic: "dot", muzzle: "none", mag: "std", gear: "frag", visor: "cyan" },
 };
 
 export function loadProgress(): Progress {

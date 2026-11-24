@@ -146,6 +146,7 @@ type Soldier = {
   rig: Rig | null;
   /** Physics state after death: ragdoll bodies, dropped rifle, drone wreck. */
   ragdoll: Ragdoll | null;
+  stun: number;
   rifleProp: Prop | null;
   wreck: Prop | null;
   dropT: number;
@@ -745,13 +746,13 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     p.sp.visible = true;
   }
 
-  function spawnFlash(at: THREE.Vector3, size: number) {
+  function spawnFlash(at: THREE.Vector3, size: number, life = 0.055) {
     const f = flashes[flashI++ % flashes.length];
     f.sp.position.copy(at);
     f.sp.scale.setScalar(size * (0.8 + fx() * 0.4));
     f.mat.rotation = fx() * Math.PI;
     f.mat.opacity = 1;
-    f.life = f.max = 0.055;
+    f.life = f.max = life;
     f.sp.visible = true;
   }
 
@@ -1453,6 +1454,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       lock: 0,
       rig: null,
       ragdoll: null,
+      stun: 0,
       rifleProp: null,
       wreck: null,
       dropT: 0,
@@ -1597,12 +1599,13 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   /** Mocap death / downed collapse. The rifle drops with the right hand. */
-  function startDeath(s: Soldier, head: boolean, opt: { from?: THREE.Vector3; force?: number; ragdoll?: boolean } = {}) {
+  function startDeath(s: Soldier, head: boolean, opt: { from?: THREE.Vector3; force?: number; ragdoll?: boolean; lift?: number } = {}) {
     if (s.kind === "drone") return;
-    if (phys && s.team === "hostile" && (opt.ragdoll || fx() < 0.5) && startRagdoll(s, head, opt)) return;
+    if (blastFrom) opt = { from: blastFrom, force: 230, ragdoll: true, lift: 0.55 };
+    if (!takedownKill && phys && s.team === "hostile" && (opt.ragdoll || fx() < 0.5) && startRagdoll(s, head, opt)) return;
     const a = s.actor.actions;
     const pool = head ? ["death_c", "death_a", "death_b"] : ["death_a", "death_b", "death_c"];
-    const pick = head && fx() < 0.6 ? pool[0] : pool[Math.floor(fx() * pool.length)];
+    const pick = takedownKill ? "death_c" : head && fx() < 0.6 ? pool[0] : pool[Math.floor(fx() * pool.length)];
     if (!a[pick]) return;
     if (s.hitAct) {
       s.hitAct.fadeOut(0.08);
@@ -1619,7 +1622,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   const ragV = new THREE.Vector3();
   const ragP = new THREE.Vector3();
   /** Physics death: the body goes limp and takes the bullet's momentum. */
-  function startRagdoll(s: Soldier, head: boolean, opt: { from?: THREE.Vector3; force?: number }) {
+  function startRagdoll(s: Soldier, head: boolean, opt: { from?: THREE.Vector3; force?: number; lift?: number }) {
     if (!phys) return false;
     s.actor.mixer.update(0);
     ragV.set(s.vel.x, 0, s.vel.z);
@@ -1637,7 +1640,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     if (opt.from) ragV.subVectors(ragP, opt.from).setY(0).normalize();
     else ragV.set(-Math.sin(s.root.rotation.y), 0, -Math.cos(s.root.rotation.y));
     const f = opt.force ?? (head ? 34 : 70);
-    ragV.multiplyScalar(f).setY(f * 0.18);
+    ragV.multiplyScalar(f).setY(f * (opt.lift ?? 0.18));
     phys.impulseAt(rd, ragP, ragV);
     dropRifle(s, ragV.multiplyScalar(0.02));
     return true;
@@ -1878,6 +1881,23 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     reloadT = 0;
     bloom = 0;
     lastShot = 99;
+    grenades = 2;
+    gearType = equipped("gear") === "emp" ? "emp" : "frag";
+    grenAim = false;
+    throwT = -1;
+    pendingTakedown = null;
+    takedownTarget = null;
+    for (const n of nades) {
+      if (n.prop && phys) phys.removeProp(n.prop);
+      scene.remove(n.mesh);
+      (n.blink.material as THREE.Material).dispose();
+    }
+    nades.length = 0;
+    for (const r of rings) {
+      scene.remove(r.mesh);
+      (r.mesh.material as THREE.Material).dispose();
+    }
+    rings.length = 0;
     hud.feed.innerHTML = "";
     medalQueue = [];
     medalTimer = 0;
@@ -2047,6 +2067,339 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   const shotDir = new THREE.Vector3();
   const sideV = new THREE.Vector3();
   const upV = new THREE.Vector3();
+  // ------------------------------------------------------------ throwables
+  type Nade = { mesh: THREE.Mesh; blink: THREE.Sprite; prop: Prop | null; fuse: number; type: "frag" | "emp"; vel: THREE.Vector3 };
+  const nades: Nade[] = [];
+  let grenades = 2;
+  let gearType: "frag" | "emp" = "frag";
+  let grenAim = false;
+  let throwT = -1;
+  let blastFrom: THREE.Vector3 | null = null;
+  let takedownKill = false;
+  let takedownTarget: Soldier | null = null;
+  let pendingTakedown: { t: number; target: Soldier } | null = null;
+  const nadeGeo = G(new THREE.SphereGeometry(0.065, 12, 8));
+  const fragMat = M(new THREE.MeshStandardMaterial({ color: 0x2c3328, metalness: 0.6, roughness: 0.5, emissive: 0xff5a2a, emissiveIntensity: 0.25 }));
+  const empMat = M(new THREE.MeshStandardMaterial({ color: 0x1d2a33, metalness: 0.7, roughness: 0.35, emissive: 0x4fc8ff, emissiveIntensity: 0.6 }));
+  const ARC_N = 48;
+  const arcGeo = G(new THREE.BufferGeometry());
+  arcGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(ARC_N * 3), 3));
+  const arcMat = M(new THREE.LineBasicMaterial({ color: 0xffb547, transparent: true, opacity: 0.85, depthWrite: false }));
+  const arcLine = new THREE.Line(arcGeo, arcMat);
+  arcLine.frustumCulled = false;
+  arcLine.visible = false;
+  arcLine.renderOrder = 5;
+  scene.add(arcLine);
+  const arcRing = new THREE.Mesh(
+    G(new THREE.RingGeometry(0.85, 1, 40).rotateX(-Math.PI / 2)),
+    M(new THREE.MeshBasicMaterial({ color: 0xffb547, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide })),
+  );
+  arcRing.visible = false;
+  scene.add(arcRing);
+  type Ring = { mesh: THREE.Mesh; t: number; max: number; size: number };
+  const rings: Ring[] = [];
+  const ringGeo = G(new THREE.RingGeometry(0.9, 1, 48).rotateX(-Math.PI / 2));
+
+  const throwFrom = new THREE.Vector3();
+  const throwVel = new THREE.Vector3();
+  function throwParams() {
+    if (!player) return;
+    const pr = player.root.position;
+    tmpV.set(fwd3.x, 0, fwd3.z).normalize();
+    throwFrom.set(pr.x, pr.y + 1.6, pr.z).addScaledVector(camRight, 0.22).addScaledVector(tmpV, 0.45);
+    const pitchUp = Math.min(1.0, Math.asin(THREE.MathUtils.clamp(fwd3.y, -1, 1)) + 0.42);
+    const sp = 12.5;
+    throwVel.set(tmpV.x * Math.cos(pitchUp) * sp, Math.sin(pitchUp) * sp, tmpV.z * Math.cos(pitchUp) * sp);
+    throwVel.x += player.vel.x * 0.5;
+    throwVel.z += player.vel.z * 0.5;
+  }
+
+  const arcA = new THREE.Vector3();
+  const arcB = new THREE.Vector3();
+  function updateArc() {
+    const show = grenAim && stage === "playing" && !!player?.alive && grenades > 0;
+    arcLine.visible = arcRing.visible = show;
+    if (!show) return;
+    throwParams();
+    const pos = arcGeo.attributes.position as THREE.BufferAttribute;
+    arcA.copy(throwFrom);
+    const v = tmpV2.copy(throwVel);
+    let n = 0;
+    let landed = false;
+    for (; n < ARC_N; n++) {
+      pos.setXYZ(n, arcA.x, arcA.y, arcA.z);
+      if (landed) continue;
+      arcB.copy(arcA).addScaledVector(v, 0.045);
+      v.y -= 9.81 * 0.045;
+      const seg = tmpV3.subVectors(arcB, arcA);
+      const len = seg.length();
+      losRay.set(arcA, seg.divideScalar(len));
+      losRay.far = len;
+      const hit = losRay.intersectObjects(blockers, false)[0];
+      const gy = groundY(arcB.x);
+      if (hit || arcB.y <= gy) {
+        if (hit) arcB.copy(hit.point);
+        else arcB.y = gy;
+        landed = true;
+      }
+      arcA.copy(arcB);
+    }
+    pos.needsUpdate = true;
+    arcRing.position.set(arcA.x, groundY(arcA.x) + 0.03, arcA.z);
+    const r = gearType === "emp" ? 7.5 : 6;
+    arcRing.scale.setScalar(r);
+    (arcRing.material as THREE.MeshBasicMaterial).color.setHex(gearType === "emp" ? 0x4fc8ff : 0xffb547);
+    arcMat.color.setHex(gearType === "emp" ? 0x4fc8ff : 0xffb547);
+  }
+
+  function startThrow() {
+    if (!player || !player.alive || stage !== "playing" || throwT >= 0 || player.lock > 0) return;
+    if (grenades <= 0) {
+      audio.dry();
+      return;
+    }
+    grenades -= 1;
+    reloadT = 0;
+    audio.pin();
+    const d = playOnce(player, "throw", 0.08, 1.5);
+    if (d > 0) {
+      player.lock = d;
+      if (player.bones) player.bones.lHand.attach(player.rifle.group);
+      throwT = 0.3;
+    } else throwT = 0;
+    updateHud(true);
+  }
+
+  function spawnNade() {
+    throwParams();
+    const type = gearType;
+    const mesh = new THREE.Mesh(nadeGeo, type === "emp" ? empMat : fragMat);
+    mesh.castShadow = true;
+    mesh.position.copy(throwFrom);
+    const bm = new THREE.SpriteMaterial({ map: flashT, color: type === "emp" ? 0x6fd8ff : 0xff4020, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+    const blink = new THREE.Sprite(bm);
+    blink.scale.setScalar(0.25);
+    mesh.add(blink);
+    scene.add(mesh);
+    const n: Nade = { mesh, blink, prop: null, fuse: type === "emp" ? 1.35 : 1.8, type, vel: throwVel.clone() };
+    if (phys) {
+      n.prop = phys.prop(mesh, tmpV.set(0.065, 0.065, 0.065), {
+        ball: 0.065,
+        linvel: throwVel,
+        angvel: new THREE.Vector3((fx() - 0.5) * 14, (fx() - 0.5) * 14, (fx() - 0.5) * 14),
+        life: 30,
+        density: 2600,
+        ccd: true,
+        restitution: 0.3,
+        friction: 1,
+        damping: [0.05, 4.5],
+        onImpact: (sp) => {
+          audio.clatter(camera.position.distanceTo(mesh.position), sp * 0.5);
+          // grenades thud and skid, they don't roll down the street
+          const b = n.prop?.body;
+          if (b) {
+            const v = b.linvel();
+            b.setLinvel({ x: v.x * 0.3, y: v.y, z: v.z * 0.3 }, true);
+          }
+        },
+      });
+    }
+    nades.push(n);
+  }
+
+  function updateNades(dt: number) {
+    if (throwT >= 0) {
+      throwT -= dt;
+      if (throwT < 0) spawnNade();
+    }
+    for (let i = nades.length - 1; i >= 0; i--) {
+      const n = nades[i];
+      n.fuse -= dt;
+      if (!n.prop) {
+        // no physics: simple ballistic + ground bounce
+        n.vel.y -= 9.81 * dt;
+        n.mesh.position.addScaledVector(n.vel, dt);
+        const gy = groundY(n.mesh.position.x) + 0.065;
+        if (n.mesh.position.y < gy) {
+          n.mesh.position.y = gy;
+          n.vel.y = Math.abs(n.vel.y) * 0.3;
+          n.vel.x *= 0.6;
+          n.vel.z *= 0.6;
+        }
+      }
+      const blinkOn = Math.sin((1.8 - n.fuse) * (n.fuse < 0.6 ? 40 : 16)) > 0;
+      n.blink.visible = blinkOn;
+      if (n.fuse <= 0) {
+        tmpV.copy(n.mesh.position);
+        if (n.prop && phys) phys.removeProp(n.prop);
+        scene.remove(n.mesh);
+        (n.blink.material as THREE.Material).dispose();
+        nades.splice(i, 1);
+        if (n.type === "emp") detonateEmp(tmpV.clone());
+        else detonateFrag(tmpV.clone());
+      }
+    }
+    for (let i = rings.length - 1; i >= 0; i--) {
+      const r = rings[i];
+      r.t += dt;
+      const k = r.t / r.max;
+      r.mesh.scale.setScalar(0.3 + k * r.size);
+      (r.mesh.material as THREE.MeshBasicMaterial).opacity = 0.55 * (1 - k) * (1 - k);
+      if (k >= 1) {
+        scene.remove(r.mesh);
+        (r.mesh.material as THREE.Material).dispose();
+        rings.splice(i, 1);
+      }
+    }
+  }
+
+  function shockRing(at: THREE.Vector3, color: number, size: number, life: number) {
+    const m = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+    m.position.set(at.x, groundY(at.x) + 0.05, at.z);
+    scene.add(m);
+    rings.push({ mesh: m, t: 0, max: life, size });
+  }
+
+  const blastP = new THREE.Vector3();
+  function detonateFrag(at: THREE.Vector3) {
+    const dist = camera.position.distanceTo(at);
+    spawnFlash(at, 5);
+    spawnFlash(tmpV.copy(at).setY(at.y + 0.6), 3.6, 0.32);
+    spawnFlash(tmpV.copy(at).setY(at.y + 1.1), 2.4, 0.45);
+    spawnSparks(at, 0xffa040, 3);
+    spawnSparks(at, 0xff5030, 2.2);
+    spawnPuff(at, 0x2a2a2e, 3.4, 1.9, 0.85);
+    spawnPuff(at, 0x6b625a, 2.2, 2.6, 0.45);
+    shockRing(at, 0xff8a3a, 6, 0.35);
+    muzzleLight.position.copy(at);
+    muzzleLight.intensity = 90;
+    audio.explode(dist, panOf(at));
+    shake = Math.min(0.55, shake + 0.5 / (1 + dist * 0.25));
+    buzz([40, 30, 60]);
+    phys?.explode(at, 6.5, 7.5);
+    alertByNoise(at, 40);
+    const before = kills;
+    blastFrom = at;
+    for (const s of [...soldiers]) {
+      if (!s.alive || s.down || s.team === "ally") continue;
+      const h = s.kind === "drone" ? DRONE_H : 0.9;
+      blastP.set(s.root.position.x, s.root.position.y + h, s.root.position.z);
+      const d = blastP.distanceTo(at);
+      const R = s === player ? 4.5 : 6;
+      if (d > R || !los(tmpV.set(at.x, 0, at.z), Math.max(0.15, at.y + 0.2), s.root.position, h)) continue;
+      const k = 1 - d / R;
+      if (s === player) damage(s, 75 * k, null);
+      else damage(s, 30 + 260 * k, player, false);
+    }
+    blastFrom = null;
+    if (kills - before >= 2) medal("demolition");
+  }
+
+  function detonateEmp(at: THREE.Vector3) {
+    const dist = camera.position.distanceTo(at);
+    spawnSparks(at, 0x7fd8ff, 3.2);
+    spawnPuff(at, 0x2d6cff, 2.6, 0.7, 0.3);
+    shockRing(at, 0x4fc8ff, 7.5, 0.55);
+    shockRing(at, 0xb6ecff, 4.5, 0.3);
+    muzzleLight.position.copy(at);
+    muzzleLight.intensity = 50;
+    audio.emp(dist, panOf(at));
+    shake = Math.min(0.3, shake + 0.2 / (1 + dist * 0.25));
+    alertByNoise(at, 22);
+    let drones = 0;
+    for (const e of [...enemies]) {
+      if (!e.alive) continue;
+      const h = e.kind === "drone" ? DRONE_H : 1;
+      blastP.set(e.root.position.x, e.root.position.y + h, e.root.position.z);
+      if (blastP.distanceTo(at) > 7.5) continue;
+      if (e.kind === "drone") {
+        drones++;
+        damage(e, 999, player, false);
+        continue;
+      }
+      e.stun = Math.max(e.stun, 4.2);
+      e.spotted = 6;
+      if (e.shield) stripShield(e);
+    }
+    if (drones > 0) medal("blackout");
+  }
+
+  function stripShield(e: Soldier) {
+    const sh = e.shield;
+    if (!sh) return;
+    e.shield = null;
+    const hb = e.hitboxes.findIndex((h) => h.userData.part === "shield");
+    if (hb >= 0) {
+      e.body.remove(e.hitboxes[hb]);
+      e.hitboxes.splice(hb, 1);
+    }
+    spawnSparks(sh.getWorldPosition(tmpV), 0x7fd8ff, 1.2);
+    if (phys) {
+      const fwd = new THREE.Vector3(Math.sin(e.root.rotation.y), 0.6, Math.cos(e.root.rotation.y)).multiplyScalar(2.2);
+      e.rifleProp = null;
+      phys.prop(sh, new THREE.Vector3(0.36, 0.5, 0.03), { linvel: fwd, angvel: new THREE.Vector3(fx() * 3, 0, fx() * 3), life: 20, density: 900 });
+    } else sh.visible = false;
+    addPop(`${KIND_LABEL.heavy} SHIELD DOWN`, true);
+  }
+
+  // ------------------------------------------------------------ takedown
+  function findTakedown() {
+    takedownTarget = null;
+    const p = player;
+    if (!p || !p.alive || p.lock > 0 || pendingTakedown) return;
+    let bd = 1.9;
+    for (const e of enemies) {
+      if (!e.alive || e.kind === "drone" || e.kind === "heavy") continue;
+      const dx = p.root.position.x - e.root.position.x;
+      const dz = p.root.position.z - e.root.position.z;
+      const d = Math.hypot(dx, dz);
+      if (d > bd) continue;
+      const behind = (dx * Math.sin(e.root.rotation.y) + dz * Math.cos(e.root.rotation.y)) / Math.max(d, 1e-3) < -0.15;
+      const unaware = e.state === "patrol" || e.stun > 0 || (e.target !== p && !e.los);
+      if ((behind && unaware) || e.stun > 0) {
+        bd = d;
+        takedownTarget = e;
+      }
+    }
+  }
+
+  function doTakedown() {
+    const t = takedownTarget;
+    const p = player;
+    if (!t || !p || stage !== "playing" || p.lock > 0) return;
+    takedownTarget = null;
+    const dx = t.root.position.x - p.root.position.x;
+    const dz = t.root.position.z - p.root.position.z;
+    const d = Math.hypot(dx, dz);
+    p.faceYaw = p.root.rotation.y = Math.atan2(dx, dz);
+    if (d > 0.95) moveBy(p, (dx / d) * (d - 0.9), (dz / d) * (d - 0.9));
+    t.stun = Math.max(t.stun, 1);
+    const dur = playOnce(p, "takedown", 0.06, 0.95);
+    if (dur > 0) {
+      p.lock = dur + 0.08;
+      if (p.bones) p.bones.lHand.attach(p.rifle.group);
+    }
+    pendingTakedown = { t: 0.24, target: t };
+  }
+
+  function updateTakedown(dt: number) {
+    if (!pendingTakedown) return;
+    pendingTakedown.t -= dt;
+    if (pendingTakedown.t > 0) return;
+    const t = pendingTakedown.target;
+    pendingTakedown = null;
+    if (!t.alive) return;
+    audio.takedown();
+    buzz(30);
+    shake = Math.min(0.2, shake + 0.1);
+    takedownKill = true;
+    damage(t, 9999, player, false);
+    takedownKill = false;
+    bonus += 50;
+    medal("silent");
+    addPop("SILENT TAKEDOWN +50", true);
+  }
+
   // Brass: pooled meshes thrown out of the ejection port as tiny rigid bodies.
   const casingGeo = G(new THREE.CylinderGeometry(0.0055, 0.0055, 0.03, 6));
   const casingMat = M(new THREE.MeshStandardMaterial({ color: 0xc9a046, metalness: 0.9, roughness: 0.3 }));
@@ -2091,7 +2444,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   function playerFire() {
-    if (!player || !player.alive || fireCd > 0 || reloadT > 0) return;
+    if (!player || !player.alive || fireCd > 0 || reloadT > 0 || player.lock > 0) return;
     if (ammo <= 0) {
       audio.dry();
       fireCd = 0.25;
@@ -2412,7 +2765,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     const d = a.root.position.distanceTo(t.root.position);
     const p = 0.4 * THREE.MathUtils.clamp(1.3 - d / 30, 0.35, 1);
     // Heavy shields stop frontal fire from the squad too.
-    if (t.kind === "heavy") {
+    if (t.kind === "heavy" && t.shield) {
       tmpV.subVectors(a.root.position, t.root.position).setY(0).normalize();
       if (tmpV.x * Math.sin(t.root.rotation.y) + tmpV.z * Math.cos(t.root.rotation.y) > 0.45) {
         remoteShot(a, t, false, 1.1, 0.3);
@@ -2547,6 +2900,23 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         if (e.body.parent === scene) e.body.position.y -= dt * 0.35;
       }
       if (e.deadTime > 10) removeSoldier(e);
+      return;
+    }
+    if (e.stun > 0) {
+      // EMP'd / grabbed: twitching, no shooting.
+      e.stun -= dt;
+      e.aiming = false;
+      e.speed = 0;
+      e.burst = 0;
+      e.aimTimer = 0;
+      if (e.laser) e.laser.visible = false;
+      if (e.kind !== "drone") animate(e, 0);
+      if (fx() < dt * 5) {
+        tmpV.set(e.root.position.x, 1.6, e.root.position.z);
+        spawnSparks(tmpV, 0x7fd8ff, 0.35);
+      }
+      if (e.marker) e.marker.visible = e.spotted > 0;
+      if (e.stun <= 0 && e.state !== "combat") alertEnemy(e, 0.1);
       return;
     }
     e.burstCd -= dt;
@@ -2990,7 +3360,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     const stickSprint = mobile && Math.hypot(moveIn.x, moveIn.y) > 0.92;
     const sprint = (sprintHeld || stickSprint) && mz > 0.3 && !ads && !firing;
     if (sprint) p.crouchWant = false;
-    const speed = p.crouchWant ? (ads ? 1.4 : 1.9) : ads ? 2.1 : sprint ? 6.0 : 3.4;
+    const speed = (p.crouchWant ? (ads ? 1.4 : 1.9) : ads ? 2.1 : sprint ? 6.0 : 3.4) * (p.lock > 0 ? 0.45 : 1);
     const fx2 = Math.sin(yaw);
     const fz2 = Math.cos(yaw);
     // forward = (sin yaw, cos yaw); right = (-cos yaw, sin yaw)
@@ -3015,6 +3385,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     const fwd = (p.root.position.x - bx) * Math.sin(p.root.rotation.y) + (p.root.position.z - bz) * Math.cos(p.root.rotation.y);
     animate(p, dt > 0 ? fwd / dt : 0);
 
+    findTakedown();
     fireCd = Math.max(0, fireCd - dt);
     lastShot += dt;
     bloom = Math.max(0, bloom - dt * (firing ? 1.2 : 4.5));
@@ -3324,9 +3695,14 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       hud.wpn.classList.toggle("empty", ammo === 0);
     }
     hud.wpn.classList.toggle("reloading", reloadT > 0);
+    hud.grenN.textContent = String(grenades);
+    hud.grenT.textContent = gearType === "emp" ? "EMP" : "FRAG";
+    hud.grenRow.classList.toggle("none", grenades === 0);
+    (hud.tGren.querySelector("i") as HTMLElement).textContent = String(grenades);
+    hud.tGren.classList.toggle("on", grenAim);
     if (reloadT > 0) hud.reloadFill.style.width = `${(1 - reloadT / reloadDur) * 100}%`;
     hud.keyHint.textContent =
-      reloadT > 0 ? "RELOADING…" : ammo <= 8 && reserve > 0 ? "▲ LOW AMMO — R" : reserve === 0 && ammo <= 8 ? "▲ NO RESERVE — FIND AMMO" : mobile ? "" : "R RELOAD · Q SHOULDER";
+      reloadT > 0 ? "RELOADING…" : ammo <= 8 && reserve > 0 ? "▲ LOW AMMO — R" : reserve === 0 && ammo <= 8 ? "▲ NO RESERVE — FIND AMMO" : mobile ? "" : "R RELOAD · G THROW · C CROUCH";
     const left = hostilesLeft();
     hud.obj.classList.toggle("alert", phase === 2 || (phase === 3 && uplinkStarted));
     if (phase < 3) {
@@ -3398,7 +3774,12 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         else if (d < 8) far = a;
       }
     }
-    if (near) {
+    hud.prompt.classList.toggle("act", !!takedownTarget && !near);
+    if (takedownTarget && !near) {
+      hud.prompt.style.display = "block";
+      hud.promptText.textContent = mobile ? "TAP · SILENT TAKEDOWN" : padActive ? "LB · SILENT TAKEDOWN" : "E · SILENT TAKEDOWN";
+      hud.promptFill.style.width = "0%";
+    } else if (near) {
       hud.prompt.style.display = "block";
       hud.promptText.textContent = `REVIVING ${near.name}`;
       hud.promptFill.style.width = `${(near.revive / 2.4) * 100}%`;
@@ -3460,7 +3841,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         <div>FIRE<b>HOLD + DRAG</b></div><div>AIM<b>TOGGLE</b></div></div>`;
     }
     return `<div class="nx-ctrl"><div>MOVE<b>W A S D</b></div><div>SPRINT<b>SHIFT</b></div><div>AIM<b>RIGHT MOUSE</b></div>
-      <div>FIRE<b>LEFT MOUSE</b></div><div>RELOAD<b>R</b></div><div>SHOULDER<b>Q</b></div><div>CROUCH<b>C</b></div><div>PAUSE<b>P / ESC</b></div><div>FULLSCREEN<b>F</b></div><div>SOUND<b>M</b></div></div>`;
+      <div>FIRE<b>LEFT MOUSE</b></div><div>RELOAD<b>R</b></div><div>SHOULDER<b>Q</b></div><div>CROUCH<b>C</b></div><div>THROW<b>HOLD G</b></div><div>TAKEDOWN<b>E</b></div><div>PAUSE<b>P / ESC</b></div><div>FULLSCREEN<b>F</b></div><div>SOUND<b>M</b></div></div>`;
   }
 
   function settingsHtml() {
@@ -3681,7 +4062,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
 
   function showLoadout() {
     const r = rankOf(prog.xp);
-    const slotName: Record<Slot, string> = { optic: "OPTIC", muzzle: "MUZZLE", mag: "MAGAZINE", visor: "VISOR" };
+    const slotName: Record<Slot, string> = { optic: "OPTIC", muzzle: "MUZZLE", mag: "MAGAZINE", gear: "THROWABLE", visor: "VISOR" };
     const rows = (Object.keys(ITEMS) as Slot[])
       .map((slot) => {
         const opts = ITEMS[slot]
@@ -4000,6 +4381,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     if (k === "r") startReload();
     if (k === "q") shoulder = -shoulder;
     if (k === "c" && player) player.crouchWant = !player.crouchWant;
+    if (k === "g" && !ev.repeat && grenades > 0) grenAim = true;
+    if (k === "e" && !ev.repeat) doTakedown();
     if (k === "shift") sprintHeld = true;
     if (["w", "a", "s", "d", " ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) ev.preventDefault();
     keys.add(k);
@@ -4008,9 +4391,14 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     const k = ev.key.toLowerCase();
     keys.delete(k);
     if (k === "shift") sprintHeld = false;
+    if (k === "g" && grenAim) {
+      grenAim = false;
+      startThrow();
+    }
   });
   on(window, "blur", () => {
     keys.clear();
+    grenAim = false;
     firing = false;
     ads = false;
     sprintHeld = false;
@@ -4144,6 +4532,24 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     ev.preventDefault();
     shoulder = -shoulder;
   });
+  on(hud.tGren, "pointerdown", (ev: PointerEvent) => {
+    ev.preventDefault();
+    if (grenades > 0) grenAim = true;
+  });
+  const releaseGren = (ev: PointerEvent) => {
+    ev.preventDefault();
+    if (!grenAim) return;
+    grenAim = false;
+    startThrow();
+  };
+  on(hud.tGren, "pointerup", releaseGren);
+  on(hud.tGren, "pointercancel", releaseGren);
+  on(hud.prompt, "pointerdown", (ev: PointerEvent) => {
+    if (!hud.prompt.classList.contains("act")) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    doTakedown();
+  });
   on(hud.tCrouch, "pointerdown", (ev: PointerEvent) => {
     ev.preventDefault();
     if (player) player.crouchWant = !player.crouchWant;
@@ -4208,6 +4614,12 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       if (edge(2)) startReload();
       if (edge(3)) shoulder = -shoulder;
       if (edge(1) && player) player.crouchWant = !player.crouchWant;
+      if (edge(4)) doTakedown();
+      if (b(5) && !padPrev[5] && grenades > 0) grenAim = true;
+      else if (!b(5) && padPrev[5] && grenAim) {
+        grenAim = false;
+        startThrow();
+      }
       if (edge(9)) pause();
     }
     padPrev = pad.buttons.map((x) => x.pressed || x.value > 0.35);
@@ -4367,7 +4779,10 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       for (const e of [...enemies]) updateEnemy(e, dt);
       separate();
       updatePickups(dt);
+      updateNades(dt);
+      updateTakedown(dt);
       updateCamera(realDt);
+      updateArc();
     } else if (stage === "menu" || stage === "loading") {
       menuCamera(realDt);
     }
@@ -4465,6 +4880,14 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       setAds: (v: boolean) => (ads = v),
       setFiring: (v: boolean) => (firing = v),
       hurt: (n: number) => player && damage(player, n, enemies[0] ?? null),
+      gear: (t: "frag" | "emp") => {
+        gearType = t;
+        grenades = 2;
+      },
+      nades,
+      get takedown() {
+        return takedownTarget ? soldiers.indexOf(takedownTarget) : -1;
+      },
       get phys() {
         return phys;
       },

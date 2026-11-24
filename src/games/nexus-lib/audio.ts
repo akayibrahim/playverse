@@ -315,6 +315,21 @@ export function createAudio() {
       burst({ dur: 0.12, type: "bandpass", freq: 1400 + Math.random() * 600, q: 2.5, gain: g, send: 0.3 });
       osc({ type: "triangle", f0: 820, f1: 610, dur: 0.09, gain: g * 0.4 });
     },
+    emp(dist: number, pan: number) {
+      const g = 0.7 / (1 + dist * 0.05);
+      osc({ type: "sawtooth", f0: 1800, f1: 60, dur: 0.7, gain: g * 0.35, pan, send: 0.7 });
+      osc({ type: "square", f0: 120, f1: 40, dur: 0.5, gain: g * 0.3, pan });
+      burst({ dur: 0.5, type: "bandpass", freq: 5200, freqEnd: 900, q: 4, gain: g * 0.4, pan, send: 0.6 });
+    },
+    pin() {
+      osc({ type: "square", f0: 2600, f1: 2400, dur: 0.03, gain: 0.05 });
+      burst({ dur: 0.05, type: "bandpass", freq: 3600, q: 3, gain: 0.12, delay: 0.05 });
+    },
+    takedown() {
+      burst({ dur: 0.16, type: "lowpass", freq: 380, gain: 0.55, brown: true });
+      osc({ type: "sine", f0: 140, f1: 55, dur: 0.18, gain: 0.35 });
+      burst({ dur: 0.05, type: "bandpass", freq: 1500, q: 2, gain: 0.12, delay: 0.04 });
+    },
     dry() {
       osc({ type: "square", f0: 1500, f1: 1400, dur: 0.02, gain: 0.07 });
     },

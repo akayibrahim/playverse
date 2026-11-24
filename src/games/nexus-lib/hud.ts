@@ -90,6 +90,11 @@ export const HUD_CSS = `
 .nx-rl i{display:block;height:100%;width:0;background:var(--a);}
 .nx-wpn.reloading .nx-rl{visibility:visible;}
 .nx-wpn .ky{margin-top:6px;font-size:9px;color:var(--d);}
+.nx-wpn .gr{margin-top:6px;font-size:10px;letter-spacing:.18em;color:#cfe3ea;}
+.nx-wpn .gr b{color:var(--a);font-weight:500;}
+.nx-wpn .gr.none{opacity:.35;}
+.nx-prompt.act{pointer-events:auto;cursor:pointer;border:1px solid var(--c);background:rgba(10,30,34,.7);}
+.nx-arc{position:absolute;inset:0;pointer-events:none;}
 
 /* crosshair */
 .nx-cross{position:absolute;left:50%;top:50%;width:0;height:0;--g:10px;transition:opacity .15s;}
@@ -234,6 +239,9 @@ export const HUD_CSS = `
 .nx-tb.sw{right:46px;top:calc(50% - 92px);width:44px;height:44px;}
 .nx-tb.cr{right:46px;top:calc(50% + 66px);width:46px;height:46px;font-size:15px;}
 .nx-tb.cr.on{background:rgba(40,130,125,.6);border-color:var(--c);}
+.nx-tb.gn{right:124px;top:calc(50% + 76px);width:46px;height:46px;font-size:15px;}
+.nx-tb.gn.on{background:rgba(160,110,30,.6);border-color:var(--a);}
+.nx-tb.gn i{position:absolute;right:-3px;top:-3px;font:700 9px var(--mono, monospace);font-style:normal;background:var(--a);color:#111;border-radius:8px;padding:1px 4px;}
 .nx-tb.sp{left:26px;bottom:22px;width:52px;height:52px;display:none;}
 .nx-tb.sp.on{background:rgba(40,130,125,.6);border-color:var(--c);}
 
@@ -346,6 +354,7 @@ export const HUD_CSS = `
 .nx-root.mobile .nx-tb.rl{right:calc(122px + env(safe-area-inset-right));}
 .nx-root.mobile .nx-tb.sw{right:calc(46px + env(safe-area-inset-right));}
 .nx-root.mobile .nx-tb.cr{right:calc(46px + env(safe-area-inset-right));}
+.nx-root.mobile .nx-tb.gn{right:calc(124px + env(safe-area-inset-right));}
 .nx-root.mobile .nx-col{left:calc(16px + env(safe-area-inset-left));}
 @keyframes nxIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @keyframes nxPop{0%{opacity:0;transform:translateY(6px)}12%{opacity:1;transform:none}75%{opacity:1}100%{opacity:0;transform:translateY(-10px)}}
@@ -370,7 +379,7 @@ export const HUD_CSS = `
   .nx-vit .hp{font-size:16px;}
   .nx-hpbar{height:5px;margin-top:5px;}
   .nx-wpn{left:calc(50% + 98px);right:auto;bottom:10px;width:auto;padding:6px 10px;text-align:left;}
-  .nx-wpn .nm,.nx-wpn .ky,.nx-mag{display:none;}
+  .nx-wpn .nm,.nx-wpn .ky,.nx-mag,.nx-wpn .gr{display:none;}
   .nx-wpn .am{font-size:20px;margin:0;}
   .nx-wpn .am small{font-size:11px;}
   .nx-hint{bottom:64px;gap:8px 12px;padding:7px 12px;}
@@ -456,7 +465,7 @@ export function buildHud(container: HTMLElement, mobile: boolean) {
       <div class="nx-squad"></div></div>
     <div class="nx-wpn nx-panelbg"><div class="nm"><span>MK-18 · CARBINE</span><b class="mode">AUTO</b></div>
       <div class="am"><span class="mg">30</span><small>/ <span class="rs">120</span></small></div>
-      <div class="nx-mag"></div><div class="nx-rl"><i></i></div><div class="ky">R RELOAD · Q SHOULDER</div></div>
+      <div class="nx-mag"></div><div class="nx-rl"><i></i></div><div class="gr"><b>◉</b> <span class="gn">2</span> <span class="gt">FRAG</span></div><div class="ky">R RELOAD · Q SHOULDER</div></div>
     <div class="nx-cross"><i></i><i></i><i></i><i></i><i></i></div>
     <div class="nx-hit"><i></i><i></i><i></i><i></i></div>
     <div class="nx-dmgs"></div>
@@ -476,6 +485,7 @@ export function buildHud(container: HTMLElement, mobile: boolean) {
     <button type="button" class="nx-tb rl">R</button>
     <button type="button" class="nx-tb sw">⇄</button>
     <button type="button" class="nx-tb cr" aria-label="Crouch">▾</button>
+    <button type="button" class="nx-tb gn" aria-label="Grenade">◉<i>2</i></button>
   </div>
   <div class="nx-ov"></div>
   <div class="nx-rotate"><div class="ph"></div><b>ROTATE YOUR DEVICE</b><span>NEXUS 2100 plays in landscape</span></div>`;
@@ -579,6 +589,10 @@ export function buildHud(container: HTMLElement, mobile: boolean) {
     tReload: q<HTMLButtonElement>(root, ".nx-tb.rl"),
     tSwap: q<HTMLButtonElement>(root, ".nx-tb.sw"),
     tCrouch: q<HTMLButtonElement>(root, ".nx-tb.cr"),
+    tGren: q<HTMLButtonElement>(root, ".nx-tb.gn"),
+    grenRow: q(root, ".nx-wpn .gr"),
+    grenN: q(root, ".nx-wpn .gn"),
+    grenT: q(root, ".nx-wpn .gt"),
   };
 }
 

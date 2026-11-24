@@ -45,6 +45,7 @@ export type Physics = {
       onRemove?: () => void;
       onImpact?: (speed: number) => void;
       center?: THREE.Vector3;
+      damping?: [number, number];
     },
   ): Prop;
   removeProp(p: Prop): void;
@@ -96,8 +97,8 @@ export async function createPhysics(): Promise<Physics | null> {
     const desc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(tv.x, tv.y, tv.z)
       .setRotation({ x: tq.x, y: tq.y, z: tq.z, w: tq.w })
-      .setLinearDamping(0.05)
-      .setAngularDamping(0.3)
+      .setLinearDamping(o.damping?.[0] ?? 0.05)
+      .setAngularDamping(o.damping?.[1] ?? 0.3)
       .setCcdEnabled(!!o.ccd);
     if (o.linvel) desc.setLinvel(o.linvel.x, o.linvel.y, o.linvel.z);
     if (o.angvel) desc.setAngvel({ x: o.angvel.x, y: o.angvel.y, z: o.angvel.z });
