@@ -519,7 +519,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     const gates: THREE.Group[] = [];
     const archMat = M(new THREE.MeshStandardMaterial({ color: 0x161a22, roughness: 0.4, metalness: 0.8 }));
     const stripMat = M(new THREE.MeshBasicMaterial({ color: def.rail }));
-    const startMat = M(new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    const startMat = M(new THREE.MeshBasicMaterial({ color: 0x7f8ea6 }));
     const colGeo = G(new THREE.BoxGeometry(1.2, 10, 1.2));
     const beamGeo = G(new THREE.BoxGeometry(W + 4, 1.4, 1.4));
     const stripGeo = G(new THREE.BoxGeometry(W + 3.6, 0.18, 1.45));
