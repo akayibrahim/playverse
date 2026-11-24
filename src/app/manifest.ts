@@ -1,21 +1,32 @@
 import type { MetadataRoute } from "next";
+import { GAMES } from "@/lib/games";
 
-// PWA: "Add to Home Screen" opens the game full-screen, landscape, without browser chrome.
+// PWA: installable from the browser ("Install app" / "Add to Home Screen"); each game is a launcher shortcut.
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "NEXUS 2100 · Playverse",
-    short_name: "NEXUS 2100",
-    description: "Squad tactics in a rain-soaked megacity. Real-time 3D in your browser.",
-    start_url: "/games/nexus",
+    id: "/",
+    name: "Playverse — games from 2100",
+    short_name: "Playverse",
+    description: "Cinematic real-time 3D games set in one rain-soaked megacity. No install, no account.",
+    start_url: "/",
     scope: "/",
     display: "fullscreen",
-    orientation: "landscape",
+    display_override: ["fullscreen", "standalone"],
+    orientation: "any",
     background_color: "#05060f",
     theme_color: "#05060f",
+    categories: ["games", "entertainment"],
     icons: [
       { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
       { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
       { src: "/icons/maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
     ],
+    shortcuts: GAMES.filter((g) => g.status === "live").map((g) => ({
+      name: g.title,
+      short_name: g.title,
+      description: g.tagline,
+      url: `/games/${g.slug}`,
+      icons: [{ src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" }],
+    })),
   };
 }

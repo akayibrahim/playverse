@@ -6,6 +6,9 @@ import { GAMES } from "@/lib/games";
 export default function Home() {
   const live = GAMES.filter((g) => g.status === "live");
   const latest = live[live.length - 1];
+  const ordered = [latest, ...live.filter((g) => g !== latest).reverse()];
+  const words = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"];
+  const howMany = words[live.length] ?? String(live.length);
 
   return (
     <main className="relative flex-1">
@@ -88,24 +91,24 @@ export default function Home() {
         <div className="flex items-end justify-between gap-6 mb-8">
           <div>
             <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-400 font-semibold">Now playing</div>
-            <h2 className="mt-2 text-2xl sm:text-3xl font-extrabold tracking-tight">Two ways into District 07.</h2>
+            <h2 className="mt-2 text-2xl sm:text-3xl font-extrabold tracking-tight">{howMany} ways into District 07.</h2>
           </div>
           <span className="hidden sm:block text-[10px] uppercase tracking-[0.2em] text-faint">Captured in-engine</span>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-2">
-          {live.map((g) => (
+        <div className="grid gap-6 lg:grid-cols-6">
+          {ordered.map((g, i) => (
             <Link
               key={g.slug}
               href={`/games/${g.slug}`}
-              className="group relative overflow-hidden rounded-sm border border-surface-border bg-black aspect-[4/5] sm:aspect-[16/11] flex flex-col justify-end"
+              className={`group relative overflow-hidden rounded-sm border border-surface-border bg-black flex flex-col justify-end ${i === 0 ? "lg:col-span-6 aspect-[4/5] sm:aspect-[16/9] lg:aspect-[21/9]" : (ordered.length - 1) % 2 === 0 ? "lg:col-span-3 aspect-[4/5] sm:aspect-[16/11]" : "lg:col-span-2 aspect-[4/5] sm:aspect-[16/11] lg:aspect-[4/5]"}`}
               style={{ ["--ac" as string]: g.accent }}
             >
               <Image
                 src={g.cover}
                 alt={`${g.title} in-game`}
                 fill
-                sizes="(min-width:1024px) 560px, 100vw"
+                sizes={i === 0 ? "(min-width:1024px) 1120px, 100vw" : "(min-width:1024px) 560px, 100vw"}
                 className="object-cover transition-transform duration-[1200ms] ease-out group-hover:scale-[1.06]"
               />
               <div className="absolute inset-0 bg-gradient-to-t from-black via-black/35 via-45% to-black/0" />
@@ -152,7 +155,7 @@ export default function Home() {
         <div className="grid gap-px bg-surface-border border border-surface-border sm:grid-cols-3">
           {[
             ["01", "Real engines, in a tab", "Physically based materials, HDRI lighting, real-time shadows, ragdoll physics and motion-captured animation — streamed into the browser."],
-            ["02", "One city, many stories", "Every game shares District 07: the same rain, the same neon, the same streets — seen from a fireteam or a sniper nest."],
+            ["02", "One city, many stories", "Every game shares District 07: the same rain, the same neon, the same streets — seen from a fireteam, a sniper nest, a sky-lane at 300 km/h, or a ninety-second time loop."],
             ["03", "Made to be replayed", "Stars, medals, ranks and daily operations. Short sessions with real decisions, on desktop or phone."],
           ].map(([n, title, body]) => (
             <div key={n} className="bg-background p-6 sm:p-7">

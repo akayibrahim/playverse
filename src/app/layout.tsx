@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { SwRegister } from "@/components/SwRegister";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -18,10 +19,10 @@ export const metadata: Metadata = {
     template: "%s · Playverse",
   },
   description:
-    "NEXUS 2100 — squad tactics in a living megacity. Rigged operators, authored environments, real-time rendering in your browser.",
+    "Cinematic real-time 3D games set in one rain-soaked megacity — NEXUS 2100, LONGSHOT, VELOCITY, ECHO. They run in your browser: no install, no account.",
   appleWebApp: {
     capable: true,
-    title: "NEXUS 2100",
+    title: "Playverse",
     statusBarStyle: "black-translucent",
   },
 };
@@ -50,6 +51,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           }}
         />
         {children}
+        <SwRegister />
       </body>
     </html>
   );
