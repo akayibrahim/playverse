@@ -19,6 +19,11 @@ export const metadata: Metadata = {
   },
   description:
     "NEXUS 2100 — squad tactics in a living megacity. Rigged operators, authored environments, real-time rendering in your browser.",
+  appleWebApp: {
+    capable: true,
+    title: "NEXUS 2100",
+    statusBarStyle: "black-translucent",
+  },
 };
 
 export const viewport: Viewport = {
@@ -27,6 +32,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false, // oyun sırasında pinch-zoom'u engelle
+  viewportFit: "cover", // çentikli ekranlarda tam kenar
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

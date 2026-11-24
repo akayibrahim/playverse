@@ -66,6 +66,9 @@ export const MEDALS: Record<string, { name: string; xp: number; icon: string }> 
   untouchable: { name: "UNTOUCHABLE", xp: 300, icon: "◇" },
   lifesaver: { name: "LIFESAVER", xp: 150, icon: "✚" },
   clutch: { name: "CLUTCH", xp: 400, icon: "⚡" },
+  giantslayer: { name: "GIANT SLAYER", xp: 200, icon: "▲" },
+  countersniper: { name: "COUNTER-SNIPER", xp: 200, icon: "✦" },
+  skeet: { name: "SKEET SHOOTER", xp: 120, icon: "✈" },
 };
 
 export type Progress = {

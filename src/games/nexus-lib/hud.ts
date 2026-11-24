@@ -326,6 +326,21 @@ export const HUD_CSS = `
 .nx-rankres span{font-size:9px;color:#cfdbe2;letter-spacing:.2em;}
 .nx-rankres em{font-style:normal;font-size:9px;color:var(--d);}
 .nx-unlock{margin:10px auto 0;display:inline-block;padding:6px 12px;font-size:10px;color:#031413;background:var(--a);}
+.nx-rotate{display:none;position:absolute;inset:0;z-index:30;pointer-events:auto;place-content:center;justify-items:center;gap:10px;
+  background:radial-gradient(ellipse at 50% 45%,#0b1620,#03070b 70%);text-align:center;}
+.nx-rotate .ph{width:46px;height:78px;border:2px solid var(--c);border-radius:8px;margin-bottom:12px;animation:nxRot 2.2s ease-in-out infinite;}
+.nx-rotate b{font:800 16px var(--sans);letter-spacing:.14em;color:#fff;}
+.nx-rotate span{font-size:9px;color:var(--d);}
+@keyframes nxRot{0%,20%{transform:rotate(0)}55%,100%{transform:rotate(-90deg)}}
+@media (orientation:portrait){.nx-root.mobile .nx-rotate{display:grid;}}
+.nx-root.mobile .nx-obj{left:calc(10px + env(safe-area-inset-left));}
+.nx-root.mobile .nx-sys{right:calc(10px + env(safe-area-inset-right));}
+.nx-root.mobile .nx-feed{right:calc(10px + env(safe-area-inset-right));}
+.nx-root.mobile .nx-tb.fire{right:calc(26px + env(safe-area-inset-right));}
+.nx-root.mobile .nx-tb.ads{right:calc(124px + env(safe-area-inset-right));}
+.nx-root.mobile .nx-tb.rl{right:calc(122px + env(safe-area-inset-right));}
+.nx-root.mobile .nx-tb.sw{right:calc(40px + env(safe-area-inset-right));}
+.nx-root.mobile .nx-col{left:calc(16px + env(safe-area-inset-left));}
 @keyframes nxIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @keyframes nxPop{0%{opacity:0;transform:translateY(6px)}12%{opacity:1;transform:none}75%{opacity:1}100%{opacity:0;transform:translateY(-10px)}}
 @keyframes nxPulse{50%{opacity:.45}}
@@ -435,7 +450,8 @@ export function buildHud(container: HTMLElement, mobile: boolean) {
     <button type="button" class="nx-tb rl">R</button>
     <button type="button" class="nx-tb sw">⇄</button>
   </div>
-  <div class="nx-ov"></div>`;
+  <div class="nx-ov"></div>
+  <div class="nx-rotate"><div class="ph"></div><b>ROTATE YOUR DEVICE</b><span>NEXUS 2100 plays in landscape</span></div>`;
   container.appendChild(root);
 
   const mag = q(root, ".nx-mag");

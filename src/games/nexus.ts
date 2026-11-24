@@ -48,6 +48,15 @@ type GameHooks = {
 type GameInstance = { dispose: () => void };
 
 type Team = "player" | "ally" | "hostile";
+type Kind = "rifle" | "heavy" | "sniper" | "drone";
+type Spot = [number, number, Kind?];
+const DRONE_H = 3.1;
+const KIND_LABEL: Record<Kind, string> = { rifle: "HOSTILE", heavy: "HEAVY", sniper: "SNIPER", drone: "DRONE" };
+const KIND_INFO: Record<Exclude<Kind, "rifle">, { t: string; s: string }> = {
+  heavy: { t: "HEAVY TROOPER", s: "Ballistic shield covers the front — aim for the head or flank" },
+  sniper: { t: "SNIPER", s: "Watch for the violet glint — break line of sight before the shot" },
+  drone: { t: "ATTACK DRONE", s: "Fast and fragile — track it and burst it down" },
+};
 type AiState = "patrol" | "combat";
 type Actor = { mixer: THREE.AnimationMixer; actions: Record<string, THREE.AnimationAction>; current: string };
 type Bones = {
@@ -65,6 +74,11 @@ type CoverPoint = { pos: THREE.Vector3; normal: THREE.Vector3; taken: Soldier | 
 type Soldier = {
   id: number;
   team: Team;
+  kind: Kind;
+  glint: THREE.Sprite | null;
+  rotors: THREE.Object3D[];
+  orbit: number;
+  shield: THREE.Mesh | null;
   name: string;
   root: THREE.Group;
   body: THREE.Group;
@@ -158,26 +172,28 @@ const SEEN_KEY = "playverse:nexusSeen";
 const SETTINGS_KEY = "playverse:nexusSettings";
 const ALLY_NAMES = ["KESTREL", "VOSS"];
 
-const WAVE1: Array<[number, number]> = [
+const WAVE1: Spot[] = [
   [-3.6, 9],
   [3.8, 4],
   [-2.6, -3],
   [3.4, -11],
   [-1.4, -17],
-  [2.8, -23],
+  [-7.6, -26, "sniper"],
 ];
-const WAVE2: Array<[number, number]> = [
+const WAVE2: Spot[] = [
   [-4.5, -32],
   [4.5, -32],
-  [0, -33],
-  [-2, -31.5],
+  [0, -33, "heavy"],
   [8.4, -5.2],
+  [-3, -30, "drone"],
+  [3, -30, "drone"],
 ];
-const WAVE3: Array<[number, number]> = [
+const WAVE3: Spot[] = [
   [-4, 31.5],
-  [4, 31.5],
-  [0, 32.5],
+  [4, 31.5, "heavy"],
+  [0, 32.5, "drone"],
   [8.4, -5.2],
+  [7.6, 30, "sniper"],
 ];
 
 const GLB_ENV = [
@@ -1101,25 +1117,79 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   laserGeo.translate(0, 0, 0.5);
   const hostileTex = T(diamond("#ff4d5c"));
 
+  const enemyGeo = {
+    shield: G(new THREE.BoxGeometry(0.56, 0.98, 0.05)),
+    shieldStrip: G(new THREE.BoxGeometry(0.46, 0.025, 0.01)),
+    droneHit: G(new THREE.SphereGeometry(0.42, 10, 8)),
+    droneCore: G(new THREE.SphereGeometry(0.3, 18, 12)),
+    droneEye: G(new THREE.SphereGeometry(0.075, 12, 8)),
+    droneArm: G(new THREE.BoxGeometry(0.62, 0.04, 0.06)),
+    droneRotor: G(new THREE.CylinderGeometry(0.19, 0.19, 0.008, 20)),
+    droneHub: G(new THREE.CylinderGeometry(0.045, 0.045, 0.07, 8)),
+    droneFin: G(new THREE.BoxGeometry(0.02, 0.14, 0.22)),
+  };
+  function droneModel(owned: { mats: THREE.Material[] }, rotors: THREE.Object3D[]) {
+    const g = new THREE.Group();
+    const hull = new THREE.MeshStandardMaterial({ color: 0x1f232a, metalness: 0.75, roughness: 0.32 });
+    const eye = new THREE.MeshStandardMaterial({ color: 0x220508, emissive: 0xff2a3c, emissiveIntensity: 3 });
+    const blur = new THREE.MeshBasicMaterial({ color: 0x9aa6b4, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide });
+    owned.mats.push(hull, eye, blur);
+    const core = new THREE.Mesh(enemyGeo.droneCore, hull);
+    core.scale.set(1, 0.55, 1.25);
+    core.position.y = DRONE_H;
+    core.castShadow = true;
+    g.add(core);
+    const e = new THREE.Mesh(enemyGeo.droneEye, eye);
+    e.position.set(0, DRONE_H - 0.03, 0.34);
+    g.add(e);
+    const fin = new THREE.Mesh(enemyGeo.droneFin, hull);
+    fin.position.set(0, DRONE_H + 0.16, -0.12);
+    g.add(fin);
+    for (let i = 0; i < 4; i++) {
+      const a = Math.PI / 4 + (i * Math.PI) / 2;
+      const arm = new THREE.Mesh(enemyGeo.droneArm, hull);
+      arm.position.set(Math.cos(a) * 0.3, DRONE_H + 0.03, Math.sin(a) * 0.3);
+      arm.rotation.y = -a;
+      arm.castShadow = true;
+      g.add(arm);
+      const hub = new THREE.Mesh(enemyGeo.droneHub, hull);
+      hub.position.set(Math.cos(a) * 0.58, DRONE_H + 0.07, Math.sin(a) * 0.58);
+      g.add(hub);
+      const rotor = new THREE.Mesh(enemyGeo.droneRotor, blur);
+      rotor.position.set(Math.cos(a) * 0.58, DRONE_H + 0.11, Math.sin(a) * 0.58);
+      g.add(rotor);
+      rotors.push(hub);
+    }
+    return g;
+  }
+
   function findBone(model: THREE.Object3D, name: string) {
     return model.getObjectByName(`mixamorig${name}`) ?? model.getObjectByName(`mixamorig:${name}`) ?? null;
   }
 
-  function spawnSoldier(team: Team, at: THREE.Vector3, name = ""): Soldier | null {
+  function spawnSoldier(team: Team, at: THREE.Vector3, name = "", kind: Kind = "rifle"): Soldier | null {
     if (!soldierSrc) return null;
     const owned = { mats: [] as THREE.Material[], tex: [] as THREE.Texture[] };
     const root = new THREE.Group();
     root.position.copy(at);
     const body = new THREE.Group();
     root.add(body);
-    const model = cloneSkeleton(soldierSrc);
-    model.rotation.y = Math.PI; // asset faces -Z; root forward is +Z
+    const isDrone = kind === "drone";
+    const rotors: THREE.Object3D[] = [];
+    const model = isDrone ? droneModel(owned, rotors) : cloneSkeleton(soldierSrc);
+    if (!isDrone) model.rotation.y = Math.PI; // asset faces -Z; root forward is +Z
     body.add(model);
     scene.add(root);
 
-    const tint = team === "hostile" ? new THREE.Color(0x2b2f36) : team === "ally" ? new THREE.Color(0x67705f) : new THREE.Color(0xd8dde0);
-    const visor = team === "hostile" ? 0xff2a3c : team === "ally" ? 0x7dffb0 : load.visor;
-    model.traverse((o) => {
+    const tint =
+      team === "hostile"
+        ? new THREE.Color(kind === "heavy" ? 0x1b1e24 : kind === "sniper" ? 0x2c2834 : 0x2b2f36)
+        : team === "ally"
+          ? new THREE.Color(0x67705f)
+          : new THREE.Color(0xd8dde0);
+    const visor =
+      team === "hostile" ? (kind === "heavy" ? 0xff7a1a : kind === "sniper" ? 0xb36bff : 0xff2a3c) : team === "ally" ? 0x7dffb0 : load.visor;
+    if (!isDrone) model.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       mesh.castShadow = true;
@@ -1146,13 +1216,13 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
 
     const mixer = new THREE.AnimationMixer(model);
     const actions: Record<string, THREE.AnimationAction> = {};
-    for (const clip of clips) actions[clip.name] = mixer.clipAction(clip);
+    if (!isDrone) for (const clip of clips) actions[clip.name] = mixer.clipAction(clip);
     const actor: Actor = { mixer, actions, current: "" };
 
     const found = ["Spine1", "Neck", "RightArm", "RightForeArm", "RightHand", "LeftArm", "LeftForeArm", "LeftHand"].map((n) =>
       findBone(model, n),
     );
-    const bones: Bones | null = found.every(Boolean)
+    const bones: Bones | null = !isDrone && found.every(Boolean)
       ? {
           spine: found[0]!,
           neck: found[1]!,
@@ -1176,6 +1246,37 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     owned.mats.push(rifle.accent);
     rifle.group.position.set(0, 0, 0.2);
     pivot.add(rifle.group);
+    if (isDrone) {
+      pivot.position.set(0, DRONE_H - 0.12, 0.15);
+      rifle.group.scale.setScalar(0.35);
+      rifle.group.visible = false;
+    }
+    if (kind === "heavy") body.scale.setScalar(1.12);
+    let shield: THREE.Mesh | null = null;
+    if (kind === "heavy") {
+      const sm = new THREE.MeshStandardMaterial({ color: 0x23272d, metalness: 0.8, roughness: 0.35, emissive: 0xff7a1a, emissiveIntensity: 0.05 });
+      owned.mats.push(sm);
+      shield = new THREE.Mesh(enemyGeo.shield, sm);
+      shield.position.set(0.14, 1.02, 0.46);
+      shield.castShadow = true;
+      body.add(shield);
+      const strip = new THREE.Mesh(enemyGeo.shieldStrip, rifle.accent);
+      strip.position.set(0, 0.36, 0.035);
+      shield.add(strip);
+      const view = new THREE.Mesh(enemyGeo.shieldStrip, rifle.accent);
+      view.position.set(0, 0.18, 0.035);
+      view.scale.set(0.5, 1, 1);
+      shield.add(view);
+    }
+    let glint: THREE.Sprite | null = null;
+    if (kind === "sniper") {
+      const gm = new THREE.SpriteMaterial({ map: flashT, color: 0xd2a6ff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: false });
+      owned.mats.push(gm);
+      glint = new THREE.Sprite(gm);
+      glint.position.set(0, 0.105, 0.16);
+      glint.scale.setScalar(0.0001);
+      rifle.group.add(glint);
+    }
 
     const hitboxes: THREE.Mesh[] = [];
     const mk = (geo: THREE.BufferGeometry, y: number, part: string) => {
@@ -1185,13 +1286,28 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       body.add(h);
       hitboxes.push(h);
     };
-    mk(hitGeo.head, 1.66, "head");
-    mk(hitGeo.torso, 1.2, "torso");
-    mk(hitGeo.legs, 0.45, "legs");
+    if (isDrone) mk(enemyGeo.droneHit, DRONE_H, "torso");
+    else {
+      mk(hitGeo.head, 1.66, "head");
+      mk(hitGeo.torso, 1.2, "torso");
+      mk(hitGeo.legs, 0.45, "legs");
+    }
+    if (shield) {
+      const h = new THREE.Mesh(enemyGeo.shield, blockerMat);
+      h.position.copy(shield.position);
+      h.userData.part = "shield";
+      body.add(h);
+      hitboxes.unshift(h);
+    }
 
     const s: Soldier = {
       id: nextId++,
       team,
+      kind,
+      glint,
+      rotors,
+      orbit: 0,
+      shield,
       name,
       root,
       body,
@@ -1202,8 +1318,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       rifle,
       hitboxes,
       owned,
-      hp: team === "hostile" ? 100 : PLAYER_HP,
-      maxHp: team === "hostile" ? 100 : PLAYER_HP,
+      hp: team !== "hostile" ? PLAYER_HP : kind === "heavy" ? 260 : kind === "sniper" ? 80 : kind === "drone" ? 60 : 100,
+      maxHp: team !== "hostile" ? PLAYER_HP : kind === "heavy" ? 260 : kind === "sniper" ? 80 : kind === "drone" ? 60 : 100,
       alive: true,
       down: false,
       vel: new THREE.Vector3(),
@@ -1249,7 +1365,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     for (const h of hitboxes) h.userData.unit = s;
 
     if (team === "hostile") {
-      const lm = new THREE.MeshBasicMaterial({ color: 0xff2a3c, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+      const lm = new THREE.MeshBasicMaterial({ color: kind === "sniper" ? 0xc28cff : 0xff2a3c, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
       owned.mats.push(lm);
       s.laser = new THREE.Mesh(laserGeo, lm);
       s.laser.visible = false;
@@ -1259,12 +1375,12 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       owned.mats.push(mm);
       s.marker = new THREE.Sprite(mm);
       s.marker.scale.set(0.022, 0.022, 1);
-      s.marker.position.set(0, 2.25, 0);
+      s.marker.position.set(0, isDrone ? DRONE_H + 0.65 : kind === "heavy" ? 2.5 : 2.25, 0);
       s.marker.visible = false;
       s.marker.renderOrder = 10;
       root.add(s.marker);
       s.hpBar = new THREE.Group();
-      s.hpBar.position.set(0, 2.08, 0);
+      s.hpBar.position.set(0, isDrone ? DRONE_H + 0.45 : kind === "heavy" ? 2.32 : 2.08, 0);
       s.hpBar.visible = false;
       const bgM = new THREE.SpriteMaterial({ color: 0x1a0507, transparent: true, opacity: 0.75, depthTest: false, sizeAttenuation: false });
       const fgM = new THREE.SpriteMaterial({ color: 0xff4d5c, depthTest: false, sizeAttenuation: false });
@@ -1374,6 +1490,24 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
 
   function updateBodyPose(s: Soldier, dt: number) {
     s.flinch *= Math.exp(-9 * dt);
+    if (s.kind === "drone") {
+      for (const r of s.rotors) r.rotation.y += dt * 40;
+      if (s.alive) {
+        s.body.position.y = Math.sin(performance.now() / 500 + s.id) * 0.12;
+        s.body.rotation.x = Math.min(0.35, s.speed * 0.06) + s.flinch * 0.3;
+        s.body.rotation.z = Math.sin(performance.now() / 700 + s.id) * 0.06;
+        const d = wrapAngle(s.faceYaw - s.root.rotation.y);
+        s.root.rotation.y += d * Math.min(1, dt * 6);
+      } else {
+        s.fall += dt;
+        s.body.position.y = Math.max(-DRONE_H + 0.28, s.body.position.y - dt * (1 + s.fall * 12));
+        if (s.body.position.y > -DRONE_H + 0.3) {
+          s.body.rotation.z += dt * 7;
+          s.body.rotation.x += dt * 2;
+        }
+      }
+      return;
+    }
     if (!s.alive || s.down) s.fall = Math.min(1, s.fall + dt / 0.6);
     else if (s.fall > 0) s.fall = Math.max(0, s.fall - dt / 0.7);
     const f = s.fall;
@@ -1485,23 +1619,32 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   /** Daily layout: deterministic jitter of the patrol positions. */
-  function shuffleSpots(spots: Array<[number, number]>, seed: number): Array<[number, number]> {
+  function shuffleSpots(spots: Spot[], seed: number): Spot[] {
     const r = mulberry32(seed);
-    return spots.map(([x, z]) => {
+    return spots.map(([x, z, kind]) => {
+      if (kind) return [x, z, kind] as Spot;
       for (let k = 0; k < 6; k++) {
         const nx = THREE.MathUtils.clamp(x + (r() - 0.5) * 6, -ROAD_HALF + 0.8, ROAD_HALF - 0.8);
         const nz = z + (r() - 0.5) * 5;
-        if (!blockedAt(nx, nz, 0.6)) return [nx, nz] as [number, number];
+        if (!blockedAt(nx, nz, 0.6)) return [nx, nz] as Spot;
       }
-      return [x, z] as [number, number];
+      return [x, z] as Spot;
     });
   }
 
-  function spawnWave(spots: Array<[number, number]>, alerted: boolean) {
-    for (const [x, z] of spots) {
-      const e = spawnSoldier("hostile", new THREE.Vector3(x, 0, z));
+  function spawnWave(spots: Spot[], alerted: boolean) {
+    for (const [x, z, kind = "rifle"] of spots) {
+      const e = spawnSoldier("hostile", new THREE.Vector3(x, 0, z), KIND_LABEL[kind], kind);
       if (!e) continue;
-      if (!alerted) {
+      if (kind === "sniper") {
+        e.faceYaw = e.root.rotation.y = z < 0 ? 0 : Math.PI;
+        e.patrol.push(new THREE.Vector3(x, 0, z));
+        if (alerted) alertEnemy(e, 0.8);
+      } else if (kind === "drone" || kind === "heavy") {
+        e.faceYaw = e.root.rotation.y = z > (player?.root.position.z ?? 0) ? Math.PI : 0;
+        e.orbit = fx() * Math.PI * 2;
+        alertEnemy(e, 0.3);
+      } else if (!alerted) {
         e.faceYaw = e.root.rotation.y = fx() * Math.PI * 2;
         for (let k = 0; k < 3; k++) {
           const px = THREE.MathUtils.clamp(x + (fx() - 0.5) * 5, -ROAD_HALF + 0.8, ROAD_HALF - 0.8);
@@ -1645,7 +1788,14 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     spawnTracer(muzzleW, impact, 0xffd9a0);
 
     const unit = hitObj?.userData.unit as Soldier | undefined;
-    if (unit && unit.alive && hitObj) {
+    if (unit && unit.alive && hitObj?.userData.part === "shield") {
+      hits += 1;
+      spawnSparks(impact, 0xffb36a, 1, tmpV3.copy(shotDir).negate());
+      audio.impact(impact.distanceTo(camera.position) * 0.5, 0);
+      if (unit.shield) (unit.shield.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.6;
+      unit.spotted = 5;
+      if (unit.state !== "combat") alertEnemy(unit, 0.2);
+    } else if (unit && unit.alive && hitObj) {
       const part = hitObj.userData.part as string;
       hits += 1;
       const dmg = (part === "head" ? DMG_HEAD : (part === "legs" ? DMG_LEGS : DMG_BODY) * mod.bodyDmg) * load.dmg;
@@ -1715,6 +1865,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     if (target.team === "player") {
       lastHurt = 0;
       phaseDamage += amount;
+      buzz(35);
       damageFlash = Math.min(1, damageFlash + amount / 30);
       shake = Math.min(0.25, shake + 0.08);
       audio.hurt();
@@ -1754,6 +1905,18 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     }
     kills += 1;
     const byPlayer = src?.team === "player";
+    if (e.kind === "drone") {
+      tmpV.set(e.root.position.x, DRONE_H + e.body.position.y, e.root.position.z);
+      spawnFlash(tmpV, 2.2);
+      spawnSparks(tmpV, 0xffa040, 2.2);
+      spawnSparks(tmpV, 0xff5030, 1.6);
+      spawnPuff(tmpV, 0x2a2a2e, 2.4, 1.4, 0.8);
+      audio.explode(camera.position.distanceTo(tmpV), panOf(tmpV));
+      if (camera.position.distanceTo(tmpV) < 10) shake = Math.min(0.3, shake + 0.15);
+    }
+    if (byPlayer && e.kind === "heavy") medal("giantslayer");
+    if (byPlayer && e.kind === "sniper") medal("countersniper");
+    if (byPlayer && e.kind === "drone") medal("skeet");
     if (byPlayer && player) {
       const now = elapsed;
       killTimes = killTimes.filter((t) => now - t < 1.8);
@@ -1765,26 +1928,34 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       if (e.state === "patrol") medal("ghost");
       if (e.root.position.distanceTo(player.root.position) > 28) medal("marksman");
     }
+    const label = KIND_LABEL[e.kind];
     if (byPlayer) {
+      const worth = (e.kind === "heavy" ? 250 : e.kind === "sniper" ? 200 : e.kind === "drone" ? 150 : 100) + (head ? 50 : 0);
+      bonus += worth;
       if (head) {
         headshots += 1;
         audio.headshot();
-        addPop("HEADSHOT +150", true);
+        buzz([15, 30, 15]);
+        addPop(`HEADSHOT +${worth}`, true);
       } else {
         audio.kill();
-        addPop("ELIMINATED +100", false);
+        buzz(20);
+        addPop(`${e.kind === "rifle" ? "ELIMINATED" : `${label} DOWN`} +${worth}`, e.kind !== "rifle");
       }
-      bonus += head ? 150 : 100;
     } else {
       bonus += 50;
     }
-    feed(`${esc(byPlayer ? "YOU" : src?.name ?? "SQUAD")} <em>✕</em> HOSTILE${head ? " <u>◎ HEADSHOT</u>" : ""}`, head ? "hs" : "");
+    feed(`${esc(byPlayer ? "YOU" : src?.name ?? "SQUAD")} <em>✕</em> ${label}${head ? " <u>◎ HEADSHOT</u>" : ""}`, head ? "hs" : "");
     if (fx() < mod.drop) dropAmmo(e.root.position);
     if (hostilesLeft() === 0 && pendingWave === 0 && phase < 3) {
       timeScale = 0.3;
       slowTimer = 0.7;
       advancePhase();
     }
+  }
+
+  function tgtH(s: Soldier) {
+    return s.kind === "drone" ? DRONE_H + s.body.position.y : 1.25;
   }
 
   function closestOnSegment(a: THREE.Vector3, b: THREE.Vector3, p: THREE.Vector3) {
@@ -1840,10 +2011,10 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     return false;
   }
 
-  function enemyFire(e: Soldier, t: Soldier) {
+  function enemyFire(e: Soldier, t: Soldier, accMul = 1) {
     const d = e.root.position.distanceTo(t.root.position);
     let aimH = 1.25;
-    let p = 0.42 * mod.enemyAcc * THREE.MathUtils.clamp(1.25 - d / 28, 0.3, 1);
+    let p = 0.42 * accMul * mod.enemyAcc * THREE.MathUtils.clamp(1.25 - d / 28, 0.3, 1);
     // Chest behind cover? Then only the head is exposed.
     if (!los(e.root.position, 1.45, t.root.position, 1.15)) {
       aimH = 1.62;
@@ -1860,7 +2031,16 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   function allyFire(a: Soldier, t: Soldier) {
     const d = a.root.position.distanceTo(t.root.position);
     const p = 0.4 * THREE.MathUtils.clamp(1.3 - d / 30, 0.35, 1);
-    if (remoteShot(a, t, fx() < p, 1.25, 1.4)) damage(t, 15, a, false);
+    // Heavy shields stop frontal fire from the squad too.
+    if (t.kind === "heavy") {
+      tmpV.subVectors(a.root.position, t.root.position).setY(0).normalize();
+      if (tmpV.x * Math.sin(t.root.rotation.y) + tmpV.z * Math.cos(t.root.rotation.y) > 0.45) {
+        remoteShot(a, t, false, 1.1, 0.3);
+        alertByNoise(a.root.position, 22);
+        return;
+      }
+    }
+    if (remoteShot(a, t, fx() < p, tgtH(t), 1.4)) damage(t, 15, a, false);
     alertByNoise(a.root.position, 22);
   }
 
@@ -1936,7 +2116,6 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     for (const a of allies) if (a.alive && !a.down) cands.push(a);
     for (const c of cands) {
       const d = e.root.position.distanceTo(c.root.position);
-      if (d > 40) continue;
       const score = d * (c === player ? 0.75 : 1) + fx() * 6;
       if (score < bestScore) {
         bestScore = score;
@@ -1984,6 +2163,12 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     e.losTimer -= dt;
     const bx = e.root.position.x;
     const bz = e.root.position.z;
+    if (e.kind !== "rifle") {
+      updateSpecial(e, dt, bx, bz);
+      if (e.marker) e.marker.visible = e.spotted > 0;
+      if (e.spotted > 0) announceThreat(e.kind);
+      return;
+    }
 
     if (e.state === "patrol") {
       e.aiming = false;
@@ -2121,6 +2306,187 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     if (e.marker) e.marker.visible = e.spotted > 0;
   }
 
+  // ------------------------------------------------- AI: special hostiles
+  const seenThreats = new Set<string>(store<{ k: string[] }>("playverse:nexusThreats", { k: [] }).k);
+  function announceThreat(kind: Kind) {
+    if (kind === "rifle" || seenThreats.has(kind) || stage !== "playing") return;
+    seenThreats.add(kind);
+    save("playverse:nexusThreats", { k: [...seenThreats] });
+    const info = KIND_INFO[kind];
+    banner("NEW THREAT", info.t, info.s, true, 3.4);
+    audio.alarm();
+  }
+
+  const strafe = new THREE.Vector3();
+  function updateSpecial(e: Soldier, dt: number, bx: number, bz: number) {
+    // --- target + line of sight (shared)
+    if (e.state === "combat") {
+      if (e.reaction > 0) e.reaction -= dt;
+      if (!e.target || !e.target.alive || e.target.down || fx() < dt * 0.12) e.target = pickTarget(e);
+    }
+    const eye = e.kind === "drone" ? DRONE_H : 1.5;
+    let t = e.target;
+    if (e.losTimer <= 0) {
+      e.losTimer = 0.2 + fx() * 0.1;
+      if (e.state === "patrol") {
+        // sniper scanning the street through the scope
+        const p = player;
+        if (p?.alive) {
+          const d = e.root.position.distanceTo(p.root.position);
+          tmpV.subVectors(p.root.position, e.root.position).setY(0).normalize();
+          const facing = Math.sin(e.root.rotation.y) * tmpV.x + Math.cos(e.root.rotation.y) * tmpV.z;
+          e.los = d < 46 && facing > 0.55 && los(e.root.position, eye, p.root.position, 1.3);
+        }
+      } else {
+        e.los = !!t && los(e.root.position, eye, t.root.position, 1.3);
+        if (t && !e.los) {
+          const alt = [player, ...allies].find((c) => c && c.alive && !c.down && c !== t && los(e.root.position, eye, c.root.position, 1.3));
+          if (alt) {
+            e.target = t = alt;
+            e.los = true;
+          }
+        }
+      }
+    }
+    if (e.state === "patrol") {
+      e.aiming = false;
+      e.speed = 0;
+      e.faceYaw = (e.root.position.z < 0 ? 0 : Math.PI) + Math.sin(elapsed * 0.35 + e.id) * 0.55;
+      if (e.los && player) {
+        e.awareness += (e.root.position.distanceTo(player.root.position) < 25 ? 0.9 : 0.45) * dt;
+        if (e.awareness >= 1) alertEnemy(e, 0.2);
+      } else e.awareness = Math.max(0, e.awareness - dt * 0.2);
+      if (e.kind === "sniper") animate(e, 0);
+      return;
+    }
+    if (e.los && t === player) e.spotted = 4;
+    const d = t ? e.root.position.distanceTo(t.root.position) : 99;
+    if (t) {
+      e.aimPoint.set(t.root.position.x, t.root.position.y + 1.25, t.root.position.z);
+      e.faceYaw = Math.atan2(t.root.position.x - e.root.position.x, t.root.position.z - e.root.position.z);
+    }
+    let laserOn = false;
+    let laserOpacity = 0;
+
+    if (e.kind === "heavy") {
+      // Relentless advance behind the shield, long bursts at mid range.
+      e.aiming = true;
+      if (t && e.reaction <= 0 && (!e.los || d > 9)) moveToward(e, t.root.position, 1.7, dt, 8.5);
+      else e.speed = 0;
+      if (e.shield) {
+        const m = e.shield.material as THREE.MeshStandardMaterial;
+        m.emissiveIntensity = Math.max(0.05, m.emissiveIntensity - dt * 2.5);
+      }
+      if (t && e.los && e.reaction <= 0 && d < 34) {
+        if (e.burst === 0 && e.burstCd <= 0) {
+          e.aimTimer += dt;
+          if (e.aimTimer > 0.5) {
+            e.burst = 6;
+            e.aimTimer = 0;
+          }
+        }
+        if (e.burst > 0 && e.shotCd <= 0) {
+          enemyFire(e, t, 0.7);
+          e.burst--;
+          e.shotCd = 0.12;
+          if (e.burst === 0) e.burstCd = 1.4 + fx() * 0.8;
+        }
+        laserOn = e.aimTimer > 0 || e.burst > 0;
+        laserOpacity = e.burst > 0 ? 0.6 : 0.2 + e.aimTimer * 0.6;
+      } else e.burst = 0;
+      const fwd = (e.root.position.x - bx) * Math.sin(e.root.rotation.y) + (e.root.position.z - bz) * Math.cos(e.root.rotation.y);
+      animate(e, dt > 0 ? fwd / dt : 0);
+    } else if (e.kind === "sniper") {
+      // Holds position; long telegraphed aim (laser + glint), one heavy shot.
+      e.speed = 0;
+      e.aiming = true;
+      animate(e, 0);
+      if (t && e.los && d < 58 && e.reaction <= 0) {
+        if (e.aimTimer < 0) e.aimTimer += dt; // post-shot cooldown
+        else {
+          e.aimTimer += dt;
+          laserOn = true;
+          laserOpacity = 0.25 + Math.min(1, e.aimTimer / 2) * 0.65;
+          e.spotted = 4;
+          if (e.aimTimer >= 2.1) {
+            sniperShot(e, t);
+            e.aimTimer = -1.8;
+          }
+        }
+      } else if (e.aimTimer > 0) e.aimTimer = Math.max(0, e.aimTimer - dt * 1.5);
+      if (e.glint) {
+        const k = e.aimTimer > 0 ? Math.min(1, e.aimTimer / 2) : 0;
+        e.glint.scale.setScalar(k > 0 ? 0.03 + k * 0.05 + Math.sin(elapsed * 22) * 0.008 : 0.0001);
+      }
+    } else {
+      // Drone: orbit the target at standoff range, short bursts from above.
+      e.aiming = true;
+      if (t) {
+        e.orbit += dt * 0.5 * e.avoidSign;
+        const r = 10 + Math.sin(elapsed * 0.3 + e.id) * 2;
+        strafe.set(
+          THREE.MathUtils.clamp(t.root.position.x + Math.cos(e.orbit) * r, -5.6, 5.6),
+          0,
+          THREE.MathUtils.clamp(t.root.position.z + Math.sin(e.orbit) * r, -WORLD_HALF + 1, WORLD_HALF - 1),
+        );
+        const px = e.root.position.x;
+        const pz = e.root.position.z;
+        tmpV.subVectors(strafe, e.root.position).setY(0);
+        const len = tmpV.length();
+        if (len > 0.2) e.root.position.addScaledVector(tmpV.divideScalar(len), Math.min(len, 4.2 * dt));
+        e.speed = dt > 0 ? Math.hypot(e.root.position.x - px, e.root.position.z - pz) / dt : 0;
+        if (Math.abs(e.root.position.x) > 5.5) e.avoidSign = -e.avoidSign;
+      }
+      if (t && e.los && d < 30) {
+        if (e.burst === 0 && e.burstCd <= 0) {
+          e.aimTimer += dt;
+          if (e.aimTimer > 0.4) {
+            e.burst = 3;
+            e.aimTimer = 0;
+          }
+        }
+        if (e.burst > 0 && e.shotCd <= 0) {
+          const p = 0.3 * THREE.MathUtils.clamp(1.25 - d / 26, 0.35, 1) * mod.enemyAcc * (t === player && player.speed > 4.5 ? 0.6 : 1);
+          if (remoteShot(e, t, fx() < p, 1.3, 1.8)) damage(t, t === player ? 5 + Math.floor(fx() * 3) : 7, e);
+          e.burst--;
+          e.shotCd = 0.15;
+          if (e.burst === 0) e.burstCd = 1.5 + fx() * 1;
+        }
+        laserOn = e.aimTimer > 0 || e.burst > 0;
+        laserOpacity = 0.3;
+      } else e.burst = 0;
+    }
+
+    if (e.laser) {
+      e.laser.visible = laserOn;
+      if (laserOn) {
+        muzzleOf(e, muzzleW);
+        e.laser.position.copy(muzzleW);
+        e.laser.lookAt(e.aimPoint);
+        const w = e.kind === "sniper" ? 2.4 : 1;
+        e.laser.scale.set(w, w, muzzleW.distanceTo(e.aimPoint));
+        (e.laser.material as THREE.MeshBasicMaterial).opacity = laserOpacity;
+      }
+    }
+  }
+
+  function sniperShot(e: Soldier, t: Soldier) {
+    let p = 0.82 * mod.enemyAcc;
+    let aimH = 1.25;
+    if (!los(e.root.position, 1.5, t.root.position, 1.15)) {
+      aimH = 1.62;
+      p *= 0.5;
+    }
+    if (t === player) {
+      if (player.speed > 4.5) p *= 0.35;
+      else if (player.speed > 1) p *= 0.6;
+    }
+    muzzleOf(e, muzzleW);
+    audio.sniper(camera.position.distanceTo(muzzleW), panOf(e.root.position));
+    if (remoteShot(e, t, fx() < p, aimH, 1.2)) damage(t, t === player ? 45 : 60, e);
+    alertByNoise(e.root.position, 30);
+  }
+
   // ------------------------------------------------------------ AI: ally
   const formation = new THREE.Vector3();
   function updateAlly(a: Soldier, i: number, dt: number) {
@@ -2174,7 +2540,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       for (const e of enemies) {
         if (!e.alive) continue;
         const d = e.root.position.distanceTo(a.root.position);
-        if (d < bd && e.state === "combat" && los(a.root.position, 1.5, e.root.position, 1.3)) {
+        if (d < bd && e.state === "combat" && los(a.root.position, 1.5, e.root.position, tgtH(e))) {
           bd = d;
           bestT = e;
         }
@@ -2184,7 +2550,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     const t = a.target && a.target.alive ? a.target : null;
     a.aiming = !!t;
     if (t) {
-      a.aimPoint.set(t.root.position.x, 1.25, t.root.position.z);
+      a.aimPoint.set(t.root.position.x, tgtH(t), t.root.position.z);
       a.faceYaw = Math.atan2(t.root.position.x - a.root.position.x, t.root.position.z - a.root.position.z);
       if (!moving || a.speed < 3) {
         if (a.burst === 0 && a.burstCd <= 0) a.burst = 3;
@@ -2351,12 +2717,12 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   function aimAssist(dt: number) {
-    if (!mobile || !player?.alive || (!firing && !ads)) return;
+    if ((!mobile && !padActive) || !player?.alive || (!firing && !ads)) return;
     let bestA = 0.09;
     let best: Soldier | null = null;
     for (const e of enemies) {
       if (!e.alive || e.spotted <= 0) continue;
-      tmpV.set(e.root.position.x, 1.3, e.root.position.z).sub(camera.position).normalize();
+      tmpV.set(e.root.position.x, tgtH(e), e.root.position.z).sub(camera.position).normalize();
       const a = Math.acos(THREE.MathUtils.clamp(tmpV.dot(fwd3), -1, 1));
       if (a < bestA) {
         bestA = a;
@@ -2364,7 +2730,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       }
     }
     if (!best) return;
-    tmpV.set(best.root.position.x, 1.3, best.root.position.z).sub(camera.position);
+    tmpV.set(best.root.position.x, tgtH(best), best.root.position.z).sub(camera.position);
     const ty = Math.atan2(tmpV.x, tmpV.z);
     const tp = Math.atan2(tmpV.y, Math.hypot(tmpV.x, tmpV.z));
     const k = Math.min(1, dt * 3.2);
@@ -2373,6 +2739,15 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   // ------------------------------------------------------------ HUD
+  function buzz(pattern: number | number[]) {
+    if (!mobile || typeof navigator.vibrate !== "function") return;
+    try {
+      navigator.vibrate(pattern);
+    } catch {
+      /* not allowed */
+    }
+  }
+
   let medalQueue: string[] = [];
   let medalTimer = 0;
   function medal(id: string) {
@@ -2394,6 +2769,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     void hud.medal.offsetWidth;
     hud.medal.classList.add("on");
     audio.medal();
+    buzz([10, 40, 10]);
     medalTimer = 1.7;
   }
 
@@ -2729,8 +3105,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       <div class="nx-h1">NEXUS <span>2100</span></div>
       <div class="nx-sub">Operation Nightfall. District 07 has gone dark. Lead a three-operator fireteam down a rain-soaked megacity street, break the hostile cell and upload the evidence before their counter-attack lands.</div>
       <div class="nx-phases">
-        <div><b>01</b><span>CLEAR THE STREET<small>Six hostiles on patrol. Strike before they raise the alarm.</small></span></div>
-        <div><b>02</b><span>REPEL REINFORCEMENTS<small>A second squad pushes in from the north end and the side alley.</small></span></div>
+        <div><b>01</b><span>CLEAR THE STREET<small>Five riflemen and a sniper on patrol. Strike before they raise the alarm.</small></span></div>
+        <div><b>02</b><span>REPEL REINFORCEMENTS<small>A shielded heavy and attack drones push in from the north end.</small></span></div>
         <div><b>03</b><span>HOLD THE UPLINK<small>Stand on the pad for ${UPLINK_TIME}s while they counter-attack.</small></span></div>
       </div>
       ${rankHtml()}
@@ -2755,7 +3131,17 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     });
   }
 
+  function mobileFullscreen() {
+    if (!mobile || document.fullscreenElement) return;
+    const el = container as HTMLElement & { requestFullscreen?: (o?: FullscreenOptions) => Promise<void> };
+    if (typeof el.requestFullscreen !== "function") return; // iOS Safari: use Add to Home Screen instead
+    el.requestFullscreen({ navigationUI: "hide" })
+      .then(() => (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }).lock?.("landscape"))
+      .catch(() => undefined);
+  }
+
   function deploy(m: Mode) {
+    mobileFullscreen();
     if (m !== mode) {
       mode = m;
       resetMission();
@@ -3355,6 +3741,69 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     shoulder = -shoulder;
   });
 
+  // ------------------------------------------------------------ gamepad
+  // Standard mapping: LS move, RS look, RT fire, LT aim, L3 sprint, X reload, Y shoulder, A confirm, Start pause.
+  let padActive = false;
+  let padPrev: boolean[] = [];
+  const padDrove = { move: false, fire: false, ads: false };
+  const dz = (v: number) => (Math.abs(v) < 0.14 ? 0 : (Math.sign(v) * (Math.abs(v) - 0.14)) / 0.86);
+  function pollPad(dt: number) {
+    const pads = typeof navigator.getGamepads === "function" ? navigator.getGamepads() : [];
+    let pad: Gamepad | null = null;
+    for (const p of pads) if (p && p.connected) pad = pad ?? p;
+    if (!pad) {
+      padActive = false;
+      return;
+    }
+    const b = (i: number) => !!pad!.buttons[i]?.pressed || (pad!.buttons[i]?.value ?? 0) > 0.35;
+    const edge = (i: number) => b(i) && !padPrev[i];
+    const lx = dz(pad.axes[0] ?? 0);
+    const ly = dz(pad.axes[1] ?? 0);
+    const rx = dz(pad.axes[2] ?? 0);
+    const ry = dz(pad.axes[3] ?? 0);
+    const any = lx || ly || rx || ry || pad.buttons.some((x) => x.pressed);
+    if (any && !padActive) {
+      padActive = true;
+      if (stage === "playing") feed("CONTROLLER CONNECTED", "");
+    }
+    if (stage === "menu" && edge(0)) deploy("op");
+    else if (stage === "menu" && edge(3)) deploy("daily");
+    else if (stage === "paused" && (edge(0) || edge(9))) resume();
+    else if (stage === "debrief" && edge(0)) {
+      resetMission();
+      startPlay();
+    } else if (stage === "playing") {
+      if (lx || ly) {
+        moveIn.set(lx, -ly);
+        padDrove.move = true;
+      } else if (padDrove.move) {
+        moveIn.set(0, 0);
+        padDrove.move = false;
+      }
+      if (rx || ry) {
+        const k = settings.sens * (ads ? 0.5 : 1);
+        yaw -= Math.sign(rx) * rx * rx * 3.2 * k * dt;
+        pitch = THREE.MathUtils.clamp(pitch - Math.sign(ry) * ry * ry * 2.2 * k * dt, -0.95, 0.8);
+      }
+      const rt = b(7);
+      const lt = b(6);
+      if (rt || padDrove.fire) {
+        firing = rt;
+        padDrove.fire = rt;
+      }
+      if (lt || padDrove.ads) {
+        ads = lt;
+        padDrove.ads = lt;
+      }
+      if (edge(10)) sprintHeld = !sprintHeld;
+      if (!lx && !ly) sprintHeld = sprintHeld && keys.has("shift");
+      if (edge(2)) startReload();
+      if (edge(3)) shoulder = -shoulder;
+      if (edge(9)) pause();
+    }
+    padPrev = pad.buttons.map((x) => x.pressed || x.value > 0.35);
+  }
+
   // ------------------------------------------------------------ composer
   let composer: EffectComposer | null = null;
   let grade: ShaderPass | null = null;
@@ -3375,6 +3824,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   const onResize = () => {
+    if (mobile && stage === "playing" && window.innerHeight > window.innerWidth) pause();
     viewW = Math.max(1, container.clientWidth);
     viewH = Math.max(1, container.clientHeight);
     renderer.setPixelRatio(pixelRatio());
@@ -3421,10 +3871,10 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   function separate() {
     for (let i = 0; i < soldiers.length; i++) {
       const A = soldiers[i];
-      if (!A.alive || A.down) continue;
+      if (!A.alive || A.down || A.kind === "drone") continue;
       for (let j = i + 1; j < soldiers.length; j++) {
         const B = soldiers[j];
-        if (!B.alive || B.down) continue;
+        if (!B.alive || B.down || B.kind === "drone") continue;
         const dx = B.root.position.x - A.root.position.x;
         const dz = B.root.position.z - A.root.position.z;
         const d = Math.hypot(dx, dz);
@@ -3463,6 +3913,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       slowTimer -= realDt;
       if (slowTimer <= 0) timeScale = 1;
     }
+    pollPad(realDt);
     const simulate = stage === "playing" || stage === "dead";
     const dt = simulate ? realDt * timeScale : 0;
 

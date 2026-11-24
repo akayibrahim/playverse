@@ -253,6 +253,18 @@ export function createAudio() {
       burst({ dur: 0.18, type: "lowpass", freq: lp, freqEnd: lp * 0.35, gain: g, pan, send: 0.35 + Math.min(0.5, dist * 0.02) });
       osc({ type: "sine", f0: hostile ? 120 : 135, f1: 40, dur: 0.15, gain: g * 0.9, pan });
     },
+    sniper(dist: number, pan: number) {
+      const g = 0.8 / (1 + dist * 0.035);
+      burst({ dur: 0.03, type: "highpass", freq: 3200, gain: g * 0.9, pan, send: 0.3 });
+      burst({ dur: 0.35, type: "lowpass", freq: 1400, freqEnd: 200, gain: g, pan, send: 0.9 });
+      osc({ type: "sine", f0: 90, f1: 32, dur: 0.4, gain: g * 0.9, pan });
+    },
+    explode(dist: number, pan: number) {
+      const g = 0.9 / (1 + dist * 0.05);
+      burst({ dur: 0.9, type: "lowpass", freq: 900, freqEnd: 80, gain: g, pan, send: 0.8, brown: true });
+      burst({ dur: 0.25, type: "bandpass", freq: 2200, freqEnd: 500, gain: g * 0.5, pan, send: 0.5 });
+      osc({ type: "sine", f0: 70, f1: 28, dur: 0.6, gain: g, pan });
+    },
     whiz(pan: number) {
       burst({ dur: 0.2, type: "bandpass", freq: 4200, freqEnd: 900, q: 3, gain: 0.32, pan });
     },
