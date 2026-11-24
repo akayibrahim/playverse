@@ -132,7 +132,21 @@ type Soldier = {
   tagUp: THREE.Texture | null;
   hpBar: THREE.Group | null;
   hpFill: THREE.Sprite | null;
+  /** Mocap layer state (retargeted UAL clips). */
+  crouchWant: boolean;
+  crouch: number;
+  twist: number;
+  lastX: number;
+  lastZ: number;
+  hitAct: THREE.AnimationAction | null;
+  hitLeft: number;
+  deathClip: string;
+  lock: number;
+  rig: Rig | null;
 };
+
+/** Bones sampled each frame to keep hitboxes / rifle pivot on the animated body. */
+type Rig = { hips: THREE.Object3D; spine: THREE.Object3D; chest: THREE.Object3D; head: THREE.Object3D };
 
 type Tracer = {
   mesh: THREE.Mesh;
@@ -843,14 +857,23 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         scene.environmentRotation.set(0, Math.PI * 0.62, 0);
       })
       .catch((err) => console.error("[NEXUS] HDR failed", err));
-    const [sol, env] = await Promise.all([solP, envP, hdrP]);
+    // Retargeted mocap (Quaternius UAL, CC0) — optional: the game falls back to procedural poses.
+    const mocapP = fetch(`${ASSET}/models/anims.json`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list: THREE.AnimationClipJSON[]) => list.map((j) => THREE.AnimationClip.parse(j)))
+      .catch((err) => {
+        console.error("[NEXUS] mocap failed", err);
+        return [] as THREE.AnimationClip[];
+      });
+    const [sol, env, , mocap] = await Promise.all([solP, envP, hdrP, mocapP]);
     if (disposed) return;
     if (!sol) {
       (hud.overlay.querySelector(".err") as HTMLElement).textContent = "CRITICAL ASSET FAULT — SEE CONSOLE";
       return;
     }
     soldierSrc = sol.scene;
-    clips = sol.animations;
+    clips = [...sol.animations, ...mocap];
+    measureRig();
     buildWorld(env.map((g) => g?.scene ?? null));
     resetMission();
     renderer.compile(scene, camera);
@@ -1182,6 +1205,31 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     return model.getObjectByName(`mixamorig${name}`) ?? model.getObjectByName(`mixamorig:${name}`) ?? null;
   }
 
+  /** Body-space heights of key bones in the Idle pose (reference for hitbox / pivot tracking). */
+  const rigRef = { hips: 1, chest: 1.3, head: 1.6 };
+  function measureRig() {
+    if (!soldierSrc) return;
+    const body = new THREE.Group();
+    const m = cloneSkeleton(soldierSrc);
+    m.rotation.y = Math.PI;
+    body.add(m);
+    const mx = new THREE.AnimationMixer(m);
+    const idle = clips.find((c) => c.name === "Idle");
+    if (idle) mx.clipAction(idle).play();
+    mx.update(0);
+    body.updateMatrixWorld(true);
+    const y = (n: string) => {
+      const b = findBone(m, n);
+      return b ? b.getWorldPosition(tmpRig).y : 0;
+    };
+    rigRef.hips = y("Hips") || 1;
+    rigRef.chest = y("Spine2") || 1.3;
+    rigRef.head = y("Head") || 1.6;
+    mx.stopAllAction();
+    mx.uncacheRoot(m);
+  }
+  const tmpRig = new THREE.Vector3();
+
   function spawnSoldier(team: Team, at: THREE.Vector3, name = "", kind: Kind = "rifle"): Soldier | null {
     if (!soldierSrc) return null;
     const owned = { mats: [] as THREE.Material[], tex: [] as THREE.Texture[] };
@@ -1376,7 +1424,21 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       tagUp: null,
       hpBar: null,
       hpFill: null,
+      crouchWant: false,
+      crouch: 0,
+      twist: 0,
+      lastX: at.x,
+      lastZ: at.z,
+      hitAct: null,
+      hitLeft: 0,
+      deathClip: "",
+      lock: 0,
+      rig: null,
     };
+    if (!isDrone) {
+      const rb = ["Hips", "Spine", "Spine2", "Head"].map((n) => findBone(model, n));
+      if (rb.every(Boolean)) s.rig = { hips: rb[0]!, spine: rb[1]!, chest: rb[2]!, head: rb[3]! };
+    }
     for (const h of hitboxes) h.userData.unit = s;
 
     if (team === "hostile") {
@@ -1442,27 +1504,155 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     }
   }
 
-  function play(s: Soldier, name: string, ts: number) {
+  function play(s: Soldier, name: string, ts: number, fade = 0.22) {
     const a = s.actor;
     const next = a.actions[name];
-    if (!next) return;
+    if (!next || s.deathClip || s.lock > 0) return;
     next.timeScale = ts;
     if (a.current === name) return;
     const prev = a.actions[a.current];
     next.reset();
     next.enabled = true;
+    next.setLoop(THREE.LoopRepeat, Infinity);
+    next.clampWhenFinished = false;
     next.setEffectiveWeight(1);
     next.play();
-    if (prev) next.crossFadeFrom(prev, 0.22, false);
+    if (prev) next.crossFadeFrom(prev, fade, false);
     a.current = name;
+  }
+
+  /** One-shot full-body clip (death, get-up, throw…); holds the last frame. */
+  function playOnce(s: Soldier, name: string, fade = 0.12, ts = 1) {
+    const a = s.actor;
+    const next = a.actions[name];
+    if (!next) return 0;
+    const prev = a.actions[a.current];
+    next.reset();
+    next.enabled = true;
+    next.setLoop(THREE.LoopOnce, 1);
+    next.clampWhenFinished = true;
+    next.timeScale = ts;
+    next.setEffectiveWeight(1);
+    next.play();
+    if (prev && prev !== next) next.crossFadeFrom(prev, fade, false);
+    a.current = name;
+    return next.getClip().duration / ts;
   }
 
   function animate(s: Soldier, forwardSpeed: number) {
     const sp = s.speed;
-    if (sp < 0.25) play(s, "Idle", 1);
+    const a = s.actor.actions;
+    if (s.crouchWant && a.crouch_idle) {
+      if (sp < 0.25) play(s, "crouch_idle", 1);
+      else play(s, "crouch_walk", (forwardSpeed < -0.3 ? -1 : 1) * Math.max(0.7, Math.min(1.6, sp / 1.3)));
+    } else if (sp < 0.25) play(s, "Idle", 1);
     else if (forwardSpeed < -0.3) play(s, "Walk", -Math.max(0.7, Math.min(1.5, sp / 1.4)));
     else if (sp > 2.4) play(s, "Run", Math.max(0.7, Math.min(1.35, sp / 4.6)));
     else play(s, "Walk", Math.max(0.7, Math.min(1.6, sp / 1.4)));
+  }
+
+  /** Additive-ish flinch: a short hit clip blended over locomotion. */
+  function hitReact(s: Soldier, head: boolean) {
+    if (s.kind === "drone" || s.deathClip || s.lock > 0) return;
+    const act = s.actor.actions[head ? "hit_head" : "hit_chest"];
+    if (!act) return;
+    if (s.hitAct && s.hitAct !== act) s.hitAct.fadeOut(0.06);
+    act.reset();
+    act.enabled = true;
+    act.setLoop(THREE.LoopOnce, 1);
+    act.clampWhenFinished = true;
+    act.timeScale = 1;
+    act.setEffectiveWeight(s.team === "player" ? 0.45 : 0.85);
+    act.play();
+    s.hitAct = act;
+    s.hitLeft = act.getClip().duration * 0.75;
+  }
+
+  /** Mocap death / downed collapse. The rifle drops with the right hand. */
+  function startDeath(s: Soldier, head: boolean) {
+    if (s.kind === "drone") return;
+    const a = s.actor.actions;
+    const pool = head ? ["death_c", "death_a", "death_b"] : ["death_a", "death_b", "death_c"];
+    const pick = head && fx() < 0.6 ? pool[0] : pool[Math.floor(fx() * pool.length)];
+    if (!a[pick]) return;
+    if (s.hitAct) {
+      s.hitAct.fadeOut(0.08);
+      s.hitAct = null;
+    }
+    s.lock = 0;
+    s.crouchWant = false;
+    playOnce(s, pick, 0.1, pick === "death_c" ? 1.35 : 1);
+    s.deathClip = pick;
+    if (s.bones) s.bones.rHand.attach(s.rifle.group);
+  }
+
+  /** Revived ally stands back up, then returns to rifle handling. */
+  function startGetup(s: Soldier) {
+    s.deathClip = "";
+    const d = playOnce(s, "getup", 0.15, 1.2);
+    s.lock = d > 0 ? d : 0;
+    s.fall = 0;
+    if (s.lock === 0) holster(s);
+  }
+
+  function holster(s: Soldier) {
+    s.pivot.add(s.rifle.group);
+    s.rifle.group.position.set(0, 0, 0.2);
+    s.rifle.group.quaternion.identity();
+    s.rifle.group.scale.setScalar(s.kind === "drone" ? 0.35 : 1);
+  }
+
+  /**
+   * Post-mixer pass: lower-body twist for strafing, then keep hitboxes and the rifle pivot on
+   * the animated skeleton (crouch / hit / death move the head and chest).
+   */
+  const rigP = new THREE.Vector3();
+  function syncRig(s: Soldier, dt: number) {
+    const rig = s.rig;
+    if (!rig) return;
+    // Movement direction in the root frame → hip yaw so legs walk sideways while the chest faces aim.
+    const dx = s.root.position.x - s.lastX;
+    const dz = s.root.position.z - s.lastZ;
+    s.lastX = s.root.position.x;
+    s.lastZ = s.root.position.z;
+    let want = 0;
+    if (s.alive && !s.down && !s.deathClip && s.lock <= 0 && s.speed > 0.5 && dt > 0) {
+      const ry = s.root.rotation.y;
+      const lf = dx * Math.sin(ry) + dz * Math.cos(ry);
+      const ls = dx * Math.cos(ry) - dz * Math.sin(ry);
+      let ang = Math.atan2(-ls, lf); // + = moving to the character's left
+      if (Math.abs(ang) > Math.PI / 2) ang -= Math.sign(ang) * Math.PI; // backpedal: legs face forward, clip reversed
+      want = THREE.MathUtils.clamp(ang, -1.15, 1.15);
+    }
+    s.twist += (want - s.twist) * Math.min(1, dt * 10);
+    if (Math.abs(s.twist) > 0.01) {
+      rotateBoneWorld(rig.hips, UP, s.twist);
+      rotateBoneWorld(rig.spine, UP, -s.twist * 0.55);
+      rotateBoneWorld(rig.chest, UP, -s.twist * 0.45);
+    }
+    s.body.updateMatrixWorld(true);
+    const local = (b: THREE.Object3D) => s.body.worldToLocal(b.getWorldPosition(rigP));
+    const head = local(rig.head);
+    const hx = head.x;
+    const hy = head.y;
+    const hz = head.z;
+    const chestY = local(rig.chest).y;
+    const hipsY = local(rig.hips).y;
+    s.crouch = THREE.MathUtils.clamp((rigRef.head - hy) / 0.55, 0, 1);
+    for (const h of s.hitboxes) {
+      const part = h.userData.part;
+      if (part === "head") h.position.set(hx * 0.8, hy + 0.12, hz * 0.8 + 0.02);
+      else if (part === "torso") h.position.set(hx * 0.4, 1.2 + (chestY - rigRef.chest), hz * 0.4 + 0.02);
+      else if (part === "legs") {
+        h.position.y = 0.45 * (hipsY / rigRef.hips);
+        h.scale.y = Math.max(0.55, hipsY / rigRef.hips);
+      } else if (part === "shield" && s.shield) h.position.copy(s.shield.position);
+    }
+    if (s.alive && !s.down && !s.deathClip) {
+      const target = 1.4 + (chestY - rigRef.chest) * 0.9;
+      s.pivot.position.y += (target - s.pivot.position.y) * Math.min(1, dt * 18);
+      if (s.shield) s.shield.position.y = 1.02 + (chestY - rigRef.chest) * 0.85;
+    }
   }
 
   // Upper-body pass: rifle orientation, torso blade, arm IK.
@@ -1523,12 +1713,20 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       }
       return;
     }
+    if (s.deathClip || s.lock > 0) {
+      s.fall = 0;
+      s.body.rotation.x = -s.flinch * 0.05;
+      s.body.rotation.z = 0;
+      s.body.position.y = 0;
+      s.root.position.y += (groundY(s.root.position.x) - s.root.position.y) * Math.min(1, dt * 12);
+      return;
+    }
     if (!s.alive || s.down) s.fall = Math.min(1, s.fall + dt / 0.6);
     else if (s.fall > 0) s.fall = Math.max(0, s.fall - dt / 0.7);
     const f = s.fall;
     const e = f * f * (3 - 2 * f);
     const g = s.alive && !s.down ? e : f * f; // falling accelerates, rising eases
-    s.body.rotation.x = -Math.PI * 0.49 * g - s.flinch * 0.16;
+    s.body.rotation.x = -Math.PI * 0.49 * g - s.flinch * (s.actor.actions.hit_chest ? 0.05 : 0.16);
     s.body.rotation.z = s.fallRoll * g;
     s.body.position.y = 0.17 * g;
     if (s.alive && !s.down) {
@@ -1748,7 +1946,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   function spreadNow() {
     const moving = player ? Math.min(1, player.speed / 6) : 0;
     const base = ads ? 0.22 * load.adsSpread : 1.2;
-    return THREE.MathUtils.degToRad(base + moving * (ads ? 0.7 : 2.2) + bloom);
+    const steady = player?.crouchWant ? 0.65 : 1;
+    return THREE.MathUtils.degToRad((base + moving * (ads ? 0.7 : 2.2)) * steady + bloom);
   }
 
   const shotDir = new THREE.Vector3();
@@ -1874,7 +2073,10 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         if (target.hp > 0) audio.hitmarker();
       }
       if (target.hp <= 0) killEnemy(target, src, head);
-      else if (fx() < 0.35) target.coverTimer = 0; // relocate under fire
+      else {
+        hitReact(target, head);
+        if (fx() < 0.35) target.coverTimer = 0; // relocate under fire
+      }
       return;
     }
     if (target.team === "player") {
@@ -1889,16 +2091,19 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         target.hp = 0;
         target.alive = false;
         target.fallRoll = (fx() - 0.5) * 0.5;
+        startDeath(target, head);
         finishMission(false);
-      }
+      } else hitReact(target, head);
       return;
     }
+    if (target.hp > 0) hitReact(target, head);
     if (target.hp <= 0) {
       target.hp = 0;
       target.down = true;
       allyWentDown = true;
       target.revive = 0;
       target.fallRoll = (fx() - 0.5) * 0.6;
+      startDeath(target, false);
       if (target.tag && target.tagDown) (target.tag.material as THREE.SpriteMaterial).map = target.tagDown;
       feed(`<em>${esc(target.name)}</em> DOWN — REVIVE`, "bad");
     }
@@ -1918,6 +2123,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       e.faceYaw = Math.atan2(src.root.position.x - e.root.position.x, src.root.position.z - e.root.position.z);
       e.root.rotation.y = e.faceYaw;
     }
+    startDeath(e, head);
     kills += 1;
     const byPlayer = src?.team === "player";
     if (e.kind === "drone") {
@@ -1970,7 +2176,11 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   function tgtH(s: Soldier) {
-    return s.kind === "drone" ? DRONE_H + s.body.position.y : 1.25;
+    return s.kind === "drone" ? DRONE_H + s.body.position.y : 1.25 - s.crouch * 0.42;
+  }
+  /** Line-of-sight height of a unit's head/chest — lower when crouched behind cover. */
+  function seeH(s: Soldier) {
+    return 1.3 - s.crouch * 0.45;
   }
 
   function closestOnSegment(a: THREE.Vector3, b: THREE.Vector3, p: THREE.Vector3) {
@@ -2031,7 +2241,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     let aimH = 1.25;
     let p = 0.42 * accMul * mod.enemyAcc * THREE.MathUtils.clamp(1.25 - d / 28, 0.3, 1);
     // Chest behind cover? Then only the head is exposed.
-    if (!los(e.root.position, 1.45, t.root.position, 1.15)) {
+    if (!los(e.root.position, 1.45, t.root.position, 1.15 - t.crouch * 0.4)) {
       aimH = 1.62;
       p *= 0.45;
     }
@@ -2187,16 +2397,20 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
 
     if (e.state === "patrol") {
       e.aiming = false;
+      e.crouchWant = false;
       if (player?.alive) {
         const d = e.root.position.distanceTo(player.root.position);
         if (e.losTimer <= 0) {
           e.losTimer = 0.2;
           tmpV.subVectors(player.root.position, e.root.position).setY(0).normalize();
           const facing = Math.sin(e.root.rotation.y) * tmpV.x + Math.cos(e.root.rotation.y) * tmpV.z;
-          e.los = d < 24 && (facing > 0.45 || d < 4) && los(e.root.position, 1.5, player.root.position, 1.3);
+          e.los = d < 24 && (facing > 0.45 || d < 4) && los(e.root.position, 1.5, player.root.position, seeH(player));
         }
         if (e.los) {
-          const rate = (d < 8 ? 1.5 : d < 16 ? 0.55 : 0.25) * (player.speed > 4.5 ? 1.7 : player.speed < 0.5 ? 0.7 : 1);
+          const rate =
+            (d < 8 ? 1.5 : d < 16 ? 0.55 : 0.25) *
+            (player.speed > 4.5 ? 1.7 : player.speed < 0.5 ? 0.7 : 1) *
+            (player.crouchWant ? 0.5 : 1);
           e.awareness += rate * dt;
           if (e.awareness >= 1) {
             alertEnemy(e, 0.25);
@@ -2226,9 +2440,9 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       let t = e.target;
       if (e.losTimer <= 0) {
         e.losTimer = 0.18 + fx() * 0.1;
-        e.los = !!t && los(e.root.position, 1.5, t.root.position, 1.3);
+        e.los = !!t && los(e.root.position, 1.5, t.root.position, seeH(t));
         if (t && !e.los) {
-          const alt = [player, ...allies].find((c) => c && c.alive && !c.down && c !== t && los(e.root.position, 1.5, c.root.position, 1.3));
+          const alt = [player, ...allies].find((c) => c && c.alive && !c.down && c !== t && los(e.root.position, 1.5, c.root.position, seeH(c)));
           if (alt) {
             e.target = t = alt;
             e.los = true;
@@ -2260,7 +2474,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         for (const side of fx() < 0.5 ? [1, -1] : [-1, 1]) {
           for (const dist of [1.2, 2]) {
             tmpV3.set(e.root.position.x - nz * side * dist, 0, e.root.position.z + nx * side * dist);
-            if (!blockedAt(tmpV3.x, tmpV3.z, 0.4) && los(tmpV3, 1.5, t.root.position, 1.3)) {
+            if (!blockedAt(tmpV3.x, tmpV3.z, 0.4) && los(tmpV3, 1.5, t.root.position, seeH(t))) {
               e.peek = tmpV3.clone();
               break;
             }
@@ -2281,6 +2495,9 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       }
       if (!moving) e.speed = 0;
       const canShoot = e.reaction <= 0 && !!t && e.los && e.root.position.distanceTo(t.root.position) < 36;
+      // Pop-up rhythm: duck behind cover between bursts, stand to aim and fire.
+      const inCover = !!e.cover && !e.peek && !moving && e.root.position.distanceTo(e.cover.pos) < 0.7;
+      e.crouchWant = inCover && e.burst === 0 && e.aimTimer < 0.04 && (e.burstCd > 0.25 || !canShoot);
       e.aiming = true;
       if (t) {
         e.aimPoint.set(t.root.position.x, t.root.position.y + 1.25, t.root.position.z);
@@ -2350,12 +2567,12 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
           const d = e.root.position.distanceTo(p.root.position);
           tmpV.subVectors(p.root.position, e.root.position).setY(0).normalize();
           const facing = Math.sin(e.root.rotation.y) * tmpV.x + Math.cos(e.root.rotation.y) * tmpV.z;
-          e.los = d < 46 && facing > 0.55 && los(e.root.position, eye, p.root.position, 1.3);
+          e.los = d < 46 && facing > 0.55 && los(e.root.position, eye, p.root.position, seeH(p));
         }
       } else {
-        e.los = !!t && los(e.root.position, eye, t.root.position, 1.3);
+        e.los = !!t && los(e.root.position, eye, t.root.position, seeH(t));
         if (t && !e.los) {
-          const alt = [player, ...allies].find((c) => c && c.alive && !c.down && c !== t && los(e.root.position, eye, c.root.position, 1.3));
+          const alt = [player, ...allies].find((c) => c && c.alive && !c.down && c !== t && los(e.root.position, eye, c.root.position, seeH(c)));
           if (alt) {
             e.target = t = alt;
             e.los = true;
@@ -2488,7 +2705,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   function sniperShot(e: Soldier, t: Soldier) {
     let p = 0.82 * mod.enemyAcc;
     let aimH = 1.25;
-    if (!los(e.root.position, 1.5, t.root.position, 1.15)) {
+    if (!los(e.root.position, 1.5, t.root.position, 1.15 - t.crouch * 0.4)) {
       aimH = 1.62;
       p *= 0.5;
     }
@@ -2515,6 +2732,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
           a.down = false;
           a.hp = 60;
           a.revive = 0;
+          startGetup(a);
           bonus += 75;
           medal("lifesaver");
           audio.revive();
@@ -2605,7 +2823,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     }
     const stickSprint = mobile && Math.hypot(moveIn.x, moveIn.y) > 0.92;
     const sprint = (sprintHeld || stickSprint) && mz > 0.3 && !ads && !firing;
-    const speed = ads ? 2.1 : sprint ? 6.0 : 3.4;
+    if (sprint) p.crouchWant = false;
+    const speed = p.crouchWant ? (ads ? 1.4 : 1.9) : ads ? 2.1 : sprint ? 6.0 : 3.4;
     const fx2 = Math.sin(yaw);
     const fz2 = Math.cos(yaw);
     // forward = (sin yaw, cos yaw); right = (-cos yaw, sin yaw)
@@ -2668,11 +2887,11 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     fwd3.set(Math.sin(vy) * Math.cos(vp), Math.sin(vp), Math.cos(vy) * Math.cos(vp));
     camRight.set(-Math.cos(vy), 0, Math.sin(vy));
     const sprinting = player.speed > 4.8;
-    const dist = THREE.MathUtils.lerp(3.1, 1.95, adsBlend) + (sprinting ? 0.35 : 0);
+    const dist = THREE.MathUtils.lerp(3.1, 1.95, adsBlend) + (sprinting ? 0.35 : 0) + player.crouch * 0.45;
     const sh = THREE.MathUtils.lerp(0.62, 0.5, adsBlend) * shoulderBlend;
     const pr = player.root.position;
     const deadLift = player.alive ? 0 : Math.min(1, deathTimer / 2);
-    camPivot.set(pr.x, pr.y + 1.55, pr.z);
+    camPivot.set(pr.x, pr.y + 1.55 - player.crouch * 0.36, pr.z);
     camDesired.copy(camPivot).addScaledVector(camRight, sh).addScaledVector(fwd3, -(dist + deadLift * 2.5));
     camDesired.y += 0.1 + deadLift * 2.2;
     camFrom.copy(camPivot).addScaledVector(camRight, sh * 0.4);
@@ -2969,6 +3188,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   function updateFastHud(dt: number) {
+    if (player && hud.tCrouch.classList.contains("on") !== player.crouchWant) hud.tCrouch.classList.toggle("on", player.crouchWant);
     const sp = spreadNow();
     const gap = Math.max(4, (Math.tan(sp) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * (viewH / 2));
     hud.cross.style.setProperty("--g", `${gap.toFixed(1)}px`);
@@ -3074,7 +3294,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         <div>FIRE<b>HOLD + DRAG</b></div><div>AIM<b>TOGGLE</b></div></div>`;
     }
     return `<div class="nx-ctrl"><div>MOVE<b>W A S D</b></div><div>SPRINT<b>SHIFT</b></div><div>AIM<b>RIGHT MOUSE</b></div>
-      <div>FIRE<b>LEFT MOUSE</b></div><div>RELOAD<b>R</b></div><div>SHOULDER<b>Q</b></div><div>PAUSE<b>P / ESC</b></div><div>FULLSCREEN<b>F</b></div><div>SOUND<b>M</b></div></div>`;
+      <div>FIRE<b>LEFT MOUSE</b></div><div>RELOAD<b>R</b></div><div>SHOULDER<b>Q</b></div><div>CROUCH<b>C</b></div><div>PAUSE<b>P / ESC</b></div><div>FULLSCREEN<b>F</b></div><div>SOUND<b>M</b></div></div>`;
   }
 
   function settingsHtml() {
@@ -3613,6 +3833,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     }
     if (k === "r") startReload();
     if (k === "q") shoulder = -shoulder;
+    if (k === "c" && player) player.crouchWant = !player.crouchWant;
     if (k === "shift") sprintHeld = true;
     if (["w", "a", "s", "d", " ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) ev.preventDefault();
     keys.add(k);
@@ -3757,6 +3978,10 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     ev.preventDefault();
     shoulder = -shoulder;
   });
+  on(hud.tCrouch, "pointerdown", (ev: PointerEvent) => {
+    ev.preventDefault();
+    if (player) player.crouchWant = !player.crouchWant;
+  });
 
   // ------------------------------------------------------------ gamepad
   // Standard mapping: LS move, RS look, RT fire, LT aim, L3 sprint, X reload, Y shoulder, A confirm, Start pause.
@@ -3816,6 +4041,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       if (!lx && !ly) sprintHeld = sprintHeld && keys.has("shift");
       if (edge(2)) startReload();
       if (edge(3)) shoulder = -shoulder;
+      if (edge(1) && player) player.crouchWant = !player.crouchWant;
       if (edge(9)) pause();
     }
     padPrev = pad.buttons.map((x) => x.pressed || x.value > 0.35);
@@ -3983,9 +4209,26 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     const animDt = stage === "paused" || stage === "debrief" ? 0 : simulate ? dt : realDt;
     if (animDt > 0) {
       for (const s of soldiers) {
-        if (s.alive && !s.down) {
+        if (s.hitAct) {
+          s.hitLeft -= animDt;
+          if (s.hitLeft <= 0) {
+            s.hitAct.fadeOut(0.2);
+            s.hitAct = null;
+          }
+        }
+        if (s.lock > 0) {
+          s.lock -= animDt;
+          if (s.lock <= 0 && !s.deathClip) {
+            s.lock = 0;
+            holster(s);
+            play(s, "Idle", 1, 0.3);
+          }
+        }
+        const posing = s.alive && !s.down && !s.deathClip && s.lock <= 0;
+        if (posing || (s.deathClip && s.deadTime < 4) || s.lock > 0) {
           s.actor.mixer.update(animDt);
-          upperBody(s, animDt);
+          syncRig(s, animDt);
+          if (posing) upperBody(s, animDt);
         }
         updateBodyPose(s, animDt);
       }
@@ -4051,6 +4294,19 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       setAds: (v: boolean) => (ads = v),
       setFiring: (v: boolean) => (firing = v),
       hurt: (n: number) => player && damage(player, n, enemies[0] ?? null),
+      anim: (i: number, name: string) => {
+        const s = soldiers[i];
+        if (!s) return;
+        if (name.startsWith("death")) {
+          s.alive = false;
+          s.deathClip = "";
+          playOnce(s, name, 0.1);
+          s.deathClip = name;
+          if (s.bones) s.bones.rHand.attach(s.rifle.group);
+        } else if (name === "crouch") s.crouchWant = true;
+        else if (name === "hit") hitReact(s, false);
+        else if (name === "getup") startGetup(s);
+      },
       cam: (p: number[] | null, l?: number[]) => {
         debugCam = p && l ? { pos: new THREE.Vector3(p[0], p[1], p[2]), look: new THREE.Vector3(l[0], l[1], l[2]) } : null;
       },

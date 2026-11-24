@@ -232,6 +232,8 @@ export const HUD_CSS = `
 .nx-tb.ads.on{background:rgba(40,130,125,.6);border-color:var(--c);}
 .nx-tb.rl{right:122px;top:calc(50% + 14px);width:48px;height:48px;}
 .nx-tb.sw{right:46px;top:calc(50% - 92px);width:44px;height:44px;}
+.nx-tb.cr{right:46px;top:calc(50% + 66px);width:46px;height:46px;font-size:15px;}
+.nx-tb.cr.on{background:rgba(40,130,125,.6);border-color:var(--c);}
 .nx-tb.sp{left:26px;bottom:22px;width:52px;height:52px;display:none;}
 .nx-tb.sp.on{background:rgba(40,130,125,.6);border-color:var(--c);}
 
@@ -343,6 +345,7 @@ export const HUD_CSS = `
 .nx-root.mobile .nx-tb.ads{right:calc(124px + env(safe-area-inset-right));}
 .nx-root.mobile .nx-tb.rl{right:calc(122px + env(safe-area-inset-right));}
 .nx-root.mobile .nx-tb.sw{right:calc(46px + env(safe-area-inset-right));}
+.nx-root.mobile .nx-tb.cr{right:calc(46px + env(safe-area-inset-right));}
 .nx-root.mobile .nx-col{left:calc(16px + env(safe-area-inset-left));}
 @keyframes nxIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @keyframes nxPop{0%{opacity:0;transform:translateY(6px)}12%{opacity:1;transform:none}75%{opacity:1}100%{opacity:0;transform:translateY(-10px)}}
@@ -472,6 +475,7 @@ export function buildHud(container: HTMLElement, mobile: boolean) {
     <button type="button" class="nx-tb ads">AIM</button>
     <button type="button" class="nx-tb rl">R</button>
     <button type="button" class="nx-tb sw">⇄</button>
+    <button type="button" class="nx-tb cr" aria-label="Crouch">▾</button>
   </div>
   <div class="nx-ov"></div>
   <div class="nx-rotate"><div class="ph"></div><b>ROTATE YOUR DEVICE</b><span>NEXUS 2100 plays in landscape</span></div>`;
@@ -574,6 +578,7 @@ export function buildHud(container: HTMLElement, mobile: boolean) {
     tAds: q<HTMLButtonElement>(root, ".nx-tb.ads"),
     tReload: q<HTMLButtonElement>(root, ".nx-tb.rl"),
     tSwap: q<HTMLButtonElement>(root, ".nx-tb.sw"),
+    tCrouch: q<HTMLButtonElement>(root, ".nx-tb.cr"),
   };
 }
 

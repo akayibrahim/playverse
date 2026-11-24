@@ -24,6 +24,7 @@ All files in this directory were downloaded as real binary assets and verified o
 | `env/antenna.glb` | https://poly.pizza/m/l5Oc9swvKk (bundle: https://poly.pizza/bundle/Cyberpunk-Pack-Hkfxa8K8zF) | Quaternius (Tomás Laulhé) | CC0 1.0 |
 | `env/turret_gun.glb` | https://poly.pizza/m/hThPXDCbwl (bundle: https://poly.pizza/bundle/Cyberpunk-Pack-Hkfxa8K8zF) | Quaternius (Tomás Laulhé) | CC0 1.0 |
 | `env/air_conditioner.glb` | https://poly.pizza/m/0MdE89Ijtt (bundle: https://poly.pizza/bundle/Cyberpunk-Pack-Hkfxa8K8zF) | Quaternius (Tomás Laulhé) | CC0 1.0 |
+| `models/anims.json` | Retargeted from https://opengameart.org/content/universal-animation-library and https://opengameart.org/content/universal-animation-library-2 (Standard packs) | Quaternius (Tomás Laulhé) | CC0 1.0 |
 | `hdr/city_sunset.hdr` | https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/venice_sunset_1k.hdr (asset: https://polyhaven.com/a/venice_sunset) | Greg Zaal / Poly Haven | CC0 1.0 |
 
 Environment GLBs were fetched from the bundle's direct static URLs of the form
@@ -60,3 +61,12 @@ Environment pieces (all static, no animations) have bounds:
 
 Note: several "Cyberpunk Platform" pieces are large modular facade/platform chunks with geometry
 extending below y=0; offset them when placing on a street grid.
+
+## Mocap clips (`models/anims.json`)
+
+Three.js `AnimationClip.toJSON` array, baked offline from the Quaternius Universal Animation Library
+GLBs onto the soldier's `mixamorig` skeleton (world-space rest-delta retarget, T-pose to T-pose,
+per-bone rest direction alignment, hips translation scaled by hip height). Clip names:
+`death_a` (Death01), `death_b` (Death01 mirrored), `death_c` (LayToIdle reversed), `hit_chest`,
+`hit_head`, `knockback`, `crouch_idle`, `crouch_walk`, `throw` (OverhandThrow), `takedown`
+(Melee_Hook), `getup` (LayToIdle), `roll`. Only the 22 body bones are keyed (no fingers).
