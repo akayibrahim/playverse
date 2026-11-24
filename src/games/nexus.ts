@@ -20,6 +20,7 @@ import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { createAudio } from "./nexus-lib/audio";
 import { createPhysics, type Physics, type Prop, type Ragdoll } from "./nexus-lib/physics";
+import { copyImage, downloadBlob, renderCard, shareCard, type CardData } from "./nexus-lib/share";
 import { buildHud, esc } from "./nexus-lib/hud";
 import { GradeShader } from "./nexus-lib/grade";
 import { buildRifle, createRifleParts, rotateBoneWorld, solveArm, type Rifle } from "./nexus-lib/rig";
@@ -1992,6 +1993,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     reloadT = 0;
     bloom = 0;
     lastShot = 99;
+    hasShot = false;
+    wantShot = false;
     grenades = 2;
     gearType = equipped("gear") === "emp" ? "emp" : "frag";
     grenAim = false;
@@ -4488,18 +4491,122 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       <div class="nx-submit"></div>
       </div></div>
       <div class="nx-actions" style="margin-top:18px"><button type="button" class="nx-btn" data-go="again">REDEPLOY ▸</button>
+        <button type="button" class="nx-btn ghost" data-go="share">SHARE CARD ⇪</button>
         <button type="button" class="nx-btn ghost" data-go="loadout">LOADOUT</button>
         <button type="button" class="nx-btn ghost" data-go="menu">MAIN MENU</button></div>
       <div class="nx-tiny">PRESS ENTER TO REDEPLOY</div></div>`;
     debriefHtml = hud.overlay.innerHTML;
+    cardBlob = null;
+    lastCard = {
+      op: mode === "daily" ? `DAILY · ${dailyOf(todayUTC()).mod.name}` : D.op,
+      district: D.code,
+      mode: mode === "daily" ? "DAILY OPS" : "TACTICAL SIMULATION",
+      success,
+      grade: g,
+      score: total,
+      best: isBest && total > 0,
+      time: formatTime(elapsed),
+      kills,
+      headshots,
+      accuracy: f.accuracy,
+      rank: after.name,
+      rankIndex: after.index,
+      medals: Object.entries(runMedals).map(([id, n]) => ({ icon: MEDALS[id].icon, name: MEDALS[id].name, n })),
+      stars: STARS.map((st) => !!starHit[st.id]),
+      date: todayUTC(),
+      url: location.origin,
+      callsign: (getNickname() || "OPERATOR").toUpperCase().slice(0, 16),
+    };
     lastRunResult = "";
     lastRun = { score: total, time: Math.round(elapsed), kills, board: mode };
     bindDebrief();
     void submitRun(true);
   }
 
+  // ------------------------------------------------------------ share card
+  const shotCanvas = document.createElement("canvas");
+  let wantShot = false;
+  let hasShot = false;
+  let lastCard: CardData | null = null;
+  let cardBlob: Blob | null = null;
+  function captureShot() {
+    wantShot = false;
+    hasShot = true;
+    const src = renderer.domElement;
+    const k = Math.min(1, 1280 / src.width);
+    shotCanvas.width = Math.round(src.width * k);
+    shotCanvas.height = Math.round(src.height * k);
+    shotCanvas.getContext("2d")?.drawImage(src, 0, 0, shotCanvas.width, shotCanvas.height);
+  }
+
+  async function cardImage() {
+    if (!lastCard) return null;
+    if (!cardBlob) cardBlob = await renderCard(hasShot ? shotCanvas : null, lastCard, hud.root);
+    return cardBlob;
+  }
+
+  function shareText() {
+    const c = lastCard;
+    if (!c) return "";
+    return `NEXUS 2100 · ${c.district} ${c.op.replace("OPERATION ", "")} — ${c.success ? "cleared" : "KIA"} with grade ${c.grade}, ${c.score.toLocaleString("en-US")} pts, ${c.kills} kills.`;
+  }
+
+  async function openShare() {
+    const blob = await cardImage().catch(() => null);
+    if (!blob || stage !== "debrief") return;
+    const url = `${location.origin}/games/nexus`;
+    if (mobile) {
+      const r = await shareCard(blob, shareText(), url);
+      if (r !== "unsupported") return;
+    }
+    const img = URL.createObjectURL(blob);
+    const canShareFiles = typeof navigator.share === "function";
+    const box = document.createElement("div");
+    box.className = "nx-share";
+    box.innerHTML = `<div class="in"><img alt="Result card" src="${img}">
+      <div class="nx-actions"><button type="button" class="nx-btn" data-sh="dl">DOWNLOAD PNG</button>
+      <button type="button" class="nx-btn ghost" data-sh="copy">COPY IMAGE</button>
+      ${canShareFiles ? `<button type="button" class="nx-btn ghost" data-sh="share">SHARE…</button>` : ""}
+      <button type="button" class="nx-btn ghost" data-sh="link">COPY LINK</button>
+      <button type="button" class="nx-btn ghost" data-sh="close">CLOSE</button></div>
+      <div class="nx-tiny st"></div></div>`;
+    hud.overlay.appendChild(box);
+    const status = box.querySelector(".st") as HTMLElement;
+    const close = () => {
+      box.remove();
+      URL.revokeObjectURL(img);
+    };
+    box.addEventListener("click", (ev) => {
+      if (ev.target === box) close();
+    });
+    box.querySelectorAll<HTMLButtonElement>("[data-sh]").forEach((b) =>
+      b.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        audio.ui();
+        const act = b.dataset.sh;
+        if (act === "close") close();
+        else if (act === "dl") {
+          downloadBlob(blob, `nexus-2100-${lastCard?.score ?? 0}.png`);
+          status.textContent = "CARD SAVED";
+        } else if (act === "copy") status.textContent = (await copyImage(blob)) ? "IMAGE COPIED — PASTE IT ANYWHERE" : "COPY NOT SUPPORTED — USE DOWNLOAD";
+        else if (act === "share") {
+          const r = await shareCard(blob, shareText(), url);
+          if (r === "unsupported") status.textContent = "SHARING FILES NOT SUPPORTED HERE";
+        } else if (act === "link") {
+          try {
+            await navigator.clipboard.writeText(`${shareText()} ${url}`);
+            status.textContent = "LINK COPIED";
+          } catch {
+            status.textContent = url;
+          }
+        }
+      }),
+    );
+  }
+
   function bindDebrief() {
     bindButtons({
+      share: () => void openShare(),
       again: () => {
         resetMission();
         startPlay();
@@ -5006,6 +5113,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     }
     if (stage === "dead") {
       deathTimer += realDt;
+      if (!hasShot && deathTimer > 0.55) wantShot = true;
       if (deathTimer > (success ? 2.6 : 2.8)) showDebrief();
     }
 
@@ -5084,6 +5192,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     }
     if (composer) composer.render(realDt);
     else renderer.render(scene, camera);
+    if (wantShot) captureShot();
   }
   raf = requestAnimationFrame(tick);
   void boot();

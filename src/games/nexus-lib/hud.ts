@@ -196,6 +196,11 @@ export const HUD_CSS = `
 .nx-dcard.on{border-color:var(--c);background:rgba(20,70,70,.42);}
 .nx-dcard.on b::before{content:"▸ ";color:var(--c);}
 .nx-dcard.lock{opacity:.55;cursor:not-allowed;}
+.nx-share{position:absolute;inset:0;z-index:6;display:grid;place-items:center;background:rgba(2,5,9,.93);pointer-events:auto;padding:16px;}
+.nx-share .in{width:min(860px,100%);text-align:center;}
+.nx-share img{display:block;width:100%;height:auto;border:1px solid rgba(111,242,227,.35);box-shadow:0 20px 60px rgba(0,0,0,.6);}
+.nx-share .nx-actions{justify-content:center;margin-top:14px;flex-wrap:wrap;}
+.nx-share .st{margin-top:8px;min-height:14px;color:var(--c);}
 @media (max-height:900px){
   .nx-col .nx-phases{margin-top:12px;}
   .nx-col .nx-phases div{padding:6px 12px;}
