@@ -1,93 +1,184 @@
 "use client";
 
 /**
- * NEXUS 2100 — third-person tactical shooter.
+ * NEXUS 2100 — Operation Nightfall.
  *
- * One directly controlled operator, three autonomous allies, five hostiles.
- * Every character is a SkeletonUtils clone of the real soldier.glb; every
- * building prop comes from the downloaded cyberpunk GLBs. Procedural geometry
- * is limited to the ground plane, FX, ground rings and UI markers.
+ * Third-person squad shooter in a rain-soaked megacity street at dusk.
+ * Three-phase mission: clear the street → repel reinforcements → hold the
+ * uplink at extraction. Every operator is a SkeletonUtils clone of the rigged
+ * soldier.glb carrying a procedural carbine held through two-bone arm IK.
  */
 
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
+import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
 import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+import { createAudio } from "./nexus-lib/audio";
+import { buildHud, esc } from "./nexus-lib/hud";
+import { GradeShader } from "./nexus-lib/grade";
+import { buildRifle, createRifleParts, rotateBoneWorld, solveArm, type Rifle } from "./nexus-lib/rig";
+import {
+  ITEMS,
+  MEDALS,
+  RANKS,
+  STARS,
+  VISOR_COLORS,
+  loadProgress,
+  rankOf,
+  saveProgress,
+  unlockedBetween,
+  type Slot,
+} from "./nexus-lib/progress";
+import { getNickname, setNickname } from "@/lib/storage";
+import { asphalt, diamond, flashTex, nameTag, sidewalk, softDot, verticalFade } from "./nexus-lib/textures";
 
 type RunStat = { label: string; value: string };
-
 type GameHooks = {
   onScore: (score: number) => void;
-  onGameOver: (score: number, stats: RunStat[]) => void;
+  onGameOver: (score: number, stats: RunStat[], opts?: { ownScreen?: boolean }) => void;
   onBoost?: (meter: number, active: boolean) => void;
   onPopup?: (text: string) => void;
   best?: number;
 };
-
 type GameInstance = { dispose: () => void };
 
 type Team = "player" | "ally" | "hostile";
-
-type Actor = {
-  mixer: THREE.AnimationMixer;
-  actions: Record<string, THREE.AnimationAction>;
-  current: string;
+type AiState = "patrol" | "combat";
+type Actor = { mixer: THREE.AnimationMixer; actions: Record<string, THREE.AnimationAction>; current: string };
+type Bones = {
+  spine: THREE.Object3D;
+  neck: THREE.Object3D;
+  rArm: THREE.Object3D;
+  rFore: THREE.Object3D;
+  rHand: THREE.Object3D;
+  lArm: THREE.Object3D;
+  lFore: THREE.Object3D;
+  lHand: THREE.Object3D;
 };
+type CoverPoint = { pos: THREE.Vector3; normal: THREE.Vector3; taken: Soldier | null };
 
 type Soldier = {
   id: number;
   team: Team;
+  name: string;
   root: THREE.Group;
+  body: THREE.Group;
   model: THREE.Object3D;
   actor: Actor;
-  ring: THREE.Mesh;
-  marker?: THREE.Sprite;
-  hpGroup?: THREE.Group;
-  hpFill?: THREE.Sprite;
+  bones: Bones | null;
+  pivot: THREE.Group;
+  rifle: Rifle;
+  hitboxes: THREE.Mesh[];
+  owned: { mats: THREE.Material[]; tex: THREE.Texture[] };
   hp: number;
-  fireCd: number;
-  reloadCd: number;
-  ammo: number;
+  maxHp: number;
   alive: boolean;
+  down: boolean;
+  vel: THREE.Vector3;
   speed: number;
-  avoidSign: number;
-  avoidTime: number;
+  faceYaw: number;
+  aimPoint: THREE.Vector3;
+  aimW: number;
+  aiming: boolean;
+  flinch: number;
+  fall: number;
+  fallRoll: number;
+  deadTime: number;
+  state: AiState;
+  awareness: number;
+  reaction: number;
+  target: Soldier | null;
+  los: boolean;
+  losTimer: number;
+  cover: CoverPoint | null;
+  coverTimer: number;
+  noLosTime: number;
+  peek: THREE.Vector3 | null;
+  aimTimer: number;
+  burst: number;
+  burstCd: number;
+  shotCd: number;
   patrol: THREE.Vector3[];
   patrolIndex: number;
   waitTime: number;
-  deathTimer: number;
-  materials: THREE.Material[];
+  avoidSign: number;
+  avoidTime: number;
+  spotted: number;
+  revive: number;
+  hurtTime: number;
+  laser: THREE.Mesh | null;
+  marker: THREE.Sprite | null;
+  tag: THREE.Sprite | null;
+  tagDown: THREE.Texture | null;
+  tagUp: THREE.Texture | null;
+  hpBar: THREE.Group | null;
+  hpFill: THREE.Sprite | null;
 };
 
-type Tracer = { mesh: THREE.Mesh; life: number; material: THREE.MeshBasicMaterial };
-type Spark = {
-  points: THREE.Points;
-  vel: THREE.Vector3[];
-  life: number;
-  material: THREE.PointsMaterial;
+type Tracer = {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  from: THREE.Vector3;
+  dir: THREE.Vector3;
+  dist: number;
+  t: number;
+  speed: number;
+  len: number;
+  on: boolean;
 };
-type Flash = { sprite: THREE.Sprite; life: number; material: THREE.SpriteMaterial };
+type Spark = { pts: THREE.Points; mat: THREE.PointsMaterial; vel: Float32Array; life: number };
+type Puff = { sp: THREE.Sprite; mat: THREE.SpriteMaterial; life: number; max: number; grow: number };
+type Pickup = { obj: THREE.Group; ring: THREE.Mesh; life: number; t: number };
 
 const ASSET = "/assets";
-const WORLD_HALF = 35;
-const STREET_HALF = 6.2;
-const HOSTILE_COUNT = 5;
-const ALLY_COUNT = 3;
-const MAG = 24;
-const RELOAD_TIME = 1.7;
-const FIRE_INTERVAL = 0.18;
-const BULLET_DAMAGE = 34;
-const PLAYER_HP = 100;
-const RANGE = 45;
-const SPAWN = new THREE.Vector3(0, 0, 25);
-const EXTRACTION = new THREE.Vector3(0, 0, -29);
+const WORLD_HALF = 34;
+const ROAD_HALF = 6.2;
+const SPAWN = new THREE.Vector3(0, 0, 27);
+const EXTRACT = new THREE.Vector3(0, 0, -25.5);
 const UP = new THREE.Vector3(0, 1, 0);
-const GROUND_PLANE = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const MAG = 30; // pickup size
+const RESERVE = 120;
+const RESERVE_MAX = 240;
+const FIRE_INTERVAL = 0.092;
+const RELOAD_TIME = 2.0;
+const RELOAD_EMPTY = 2.45;
+const DMG_BODY = 26;
+const DMG_HEAD = 110;
+const DMG_LEGS = 19;
+const PLAYER_HP = 100;
+const REGEN_DELAY = 4.5;
+const REGEN_RATE = 16;
+const UPLINK_TIME = 14;
 const SEEN_KEY = "playverse:nexusSeen";
+const SETTINGS_KEY = "playverse:nexusSettings";
+const ALLY_NAMES = ["KESTREL", "VOSS"];
+
+const WAVE1: Array<[number, number]> = [
+  [-3.6, 9],
+  [3.8, 4],
+  [-2.6, -3],
+  [3.4, -11],
+  [-1.4, -17],
+  [2.8, -23],
+];
+const WAVE2: Array<[number, number]> = [
+  [-4.5, -32],
+  [4.5, -32],
+  [0, -33],
+  [-2, -31.5],
+  [8.4, -5.2],
+];
+const WAVE3: Array<[number, number]> = [
+  [-4, 31.5],
+  [4, 31.5],
+  [0, 32.5],
+  [8.4, -5.2],
+];
 
 const GLB_ENV = [
   "cyberpunk_platform_a",
@@ -106,7 +197,6 @@ const GLB_ENV = [
   "air_conditioner",
 ];
 
-/** Deterministic PRNG so the district is identical on every run. */
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -118,216 +208,75 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-function formatTime(sec: number): string {
+function formatTime(sec: number) {
   const s = Math.max(0, Math.floor(sec));
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
-function readSeen(): boolean {
+function wrapAngle(a: number) {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
+
+function store<T>(key: string, fallback: T): T {
   try {
-    return typeof localStorage !== "undefined" && localStorage.getItem(SEEN_KEY) === "1";
+    const raw = localStorage.getItem(key);
+    return raw ? ({ ...fallback, ...JSON.parse(raw) } as T) : fallback;
   } catch {
-    return false;
+    return fallback;
   }
 }
 
-function writeSeen() {
+function save(key: string, value: unknown) {
   try {
-    if (typeof localStorage !== "undefined") localStorage.setItem(SEEN_KEY, "1");
+    localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value));
   } catch {
-    /* storage disabled: tutorial simply repeats */
+    /* storage disabled */
   }
 }
 
-const HUD_CSS = `
-.nx-root{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:2;
-  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:#b9c6d4;
-  -webkit-user-select:none;user-select:none;}
-.nx-root *{box-sizing:border-box;}
-.nx-top{position:absolute;top:0;left:0;right:0;display:grid;
-  grid-template-columns:1fr auto 1fr;align-items:start;gap:10px;padding:12px 16px;
-  background:linear-gradient(180deg,rgba(4,8,13,.82),transparent);}
-.nx-brand{font-size:9px;letter-spacing:.24em;color:#8ea5b5;}
-.nx-brand b{font-weight:600;color:#dcebf4;}
-.nx-brand span{display:block;margin-top:3px;font-size:8px;color:#5d7384;letter-spacing:.2em;}
-.nx-obj{justify-self:center;min-width:220px;padding:6px 14px 5px;text-align:center;
-  font-size:10px;letter-spacing:.2em;color:#d2e2ec;
-  border:1px solid rgba(116,170,182,.3);border-top:none;
-  background:rgba(7,15,22,.66);}
-.nx-obj.hot{color:#8ff0dd;border-color:rgba(126,235,211,.55);}
-.nx-obj small{display:block;margin-top:3px;font-size:8px;color:#7b95a6;letter-spacing:.16em;}
-.nx-clock{text-align:right;font-size:9px;color:#8ea5b5;letter-spacing:.16em;}
-.nx-clock strong{color:#dbe8f1;font-weight:500;}
-.nx-clock span{display:block;margin-top:4px;font-size:8px;color:#6d8596;}
-.nx-bottom{position:absolute;left:16px;bottom:16px;width:234px;padding:9px 11px;
-  border:1px solid rgba(126,168,184,.25);border-left:2px solid #63cfc8;
-  background:linear-gradient(90deg,rgba(7,15,22,.85),rgba(7,15,22,.55));}
-.nx-bottom .nx-lbl{display:flex;justify-content:space-between;font-size:8px;color:#8098a9;}
-.nx-hpbar{height:5px;margin:6px 0 9px;background:rgba(255,255,255,.09);overflow:hidden;}
-.nx-hpbar>i{display:block;height:100%;width:100%;background:linear-gradient(90deg,#3d8f8c,#85e6d5);
-  transition:width .14s linear;}
-.nx-hpbar.low>i{background:linear-gradient(90deg,#8c3535,#e0715e);}
-.nx-ammo{display:flex;align-items:baseline;justify-content:space-between;font-size:9px;color:#8098a9;}
-.nx-ammo b{font-size:20px;letter-spacing:.04em;color:#e3f0f5;font-weight:500;}
-.nx-ammo em{font-style:normal;color:#66808f;}
-.nx-reticle{position:absolute;left:50%;top:50%;width:26px;height:26px;
-  transform:translate(-50%,-50%);opacity:.85;transition:transform .12s,opacity .12s;}
-.nx-reticle.ads{transform:translate(-50%,-50%) scale(.55);opacity:1;}
-.nx-reticle i{position:absolute;background:#d5e8ec;box-shadow:0 0 3px rgba(0,0,0,.9);}
-.nx-reticle i:nth-child(1){left:12px;top:0;width:2px;height:7px;}
-.nx-reticle i:nth-child(2){left:12px;bottom:0;width:2px;height:7px;}
-.nx-reticle i:nth-child(3){top:12px;left:0;height:2px;width:7px;}
-.nx-reticle i:nth-child(4){top:12px;right:0;height:2px;width:7px;}
-.nx-reticle i:nth-child(5){left:12px;top:12px;width:2px;height:2px;background:#8ff0dd;}
-.nx-hit{position:absolute;left:50%;top:50%;width:20px;height:20px;
-  transform:translate(-50%,-50%) rotate(45deg);display:none;pointer-events:none;}
-.nx-hit i{position:absolute;background:#f2fafb;}
-.nx-hit i:nth-child(1){left:9px;top:0;width:2px;height:20px;}
-.nx-hit i:nth-child(2){top:9px;left:0;height:2px;width:20px;}
-.nx-hit.kill i{background:#ff6a58;}
-.nx-edge{position:absolute;left:50%;top:50%;display:none;pointer-events:none;
-  transform:translate(-50%,-50%);text-align:center;white-space:nowrap;}
-.nx-edge .nx-arw{display:block;font-size:19px;line-height:1;color:#ff7765;
-  text-shadow:0 0 8px rgba(255,80,60,.65);}
-.nx-edge .nx-dist{display:block;margin-top:2px;padding:2px 5px;font-size:8px;
-  letter-spacing:.14em;color:#ffd0c6;border:1px solid rgba(255,110,90,.42);
-  background:rgba(24,6,6,.72);}
-.nx-overlay{position:absolute;inset:0;z-index:7;display:flex;align-items:center;
-  justify-content:center;padding:20px;background:radial-gradient(ellipse at 50% 40%,rgba(9,17,25,.9),rgba(3,6,11,.96));
-  pointer-events:none;text-align:center;}
-.nx-panel{width:min(520px,92vw);padding:22px 24px;border:1px solid rgba(122,180,190,.3);
-  pointer-events:none;
-  background:linear-gradient(180deg,rgba(10,22,30,.94),rgba(6,12,18,.94));
-  box-shadow:0 20px 70px rgba(0,0,0,.55);}
-.nx-kicker{font-size:9px;letter-spacing:.4em;color:#71909f;}
-.nx-title{margin:9px 0 6px;font-size:clamp(16px,3.4vw,25px);letter-spacing:.3em;
-  font-weight:600;color:#e4f0f6;}
-.nx-rule{height:1px;margin:14px auto;width:100%;
-  background:linear-gradient(90deg,transparent,#3d6470,transparent);}
-.nx-bar{height:3px;background:rgba(255,255,255,.09);overflow:hidden;}
-.nx-bar>i{display:block;height:100%;width:0;background:#67c9c2;transition:width .2s linear;}
-.nx-pct{margin-top:8px;font-size:9px;letter-spacing:.22em;color:#90a8b8;}
-.nx-loadlines{display:flex;flex-direction:column;gap:5px;margin:14px auto 0;
-  width:min(340px,100%);font-size:9px;color:#7b92a2;}
-.nx-loadlines>div{display:flex;justify-content:space-between;}
-.nx-loadlines b{font-weight:400;color:#67c9c2;}
-.nx-error{margin-top:12px;color:#dc8d83;font-size:9px;letter-spacing:.16em;}
-.nx-btn{pointer-events:auto;cursor:pointer;margin-top:16px;padding:11px 24px;
-  border:1px solid rgba(120,200,200,.5);background:rgba(13,34,40,.85);
-  color:#dceef0;font:inherit;letter-spacing:.24em;text-transform:uppercase;
-  transition:background .15s,border-color .15s;}
-.nx-btn:hover{background:rgba(25,62,68,.92);border-color:#8fe4d8;}
-.nx-btn:active{transform:translateY(1px);}
-.nx-btn:disabled{opacity:.4;cursor:default;}
-.nx-stepnum{font-size:clamp(42px,10vw,68px);line-height:1;letter-spacing:.02em;
-  font-weight:600;color:#69d3cb;text-shadow:0 0 26px rgba(70,210,200,.25);}
-.nx-stepttl{margin-top:6px;font-size:clamp(15px,3.6vw,22px);letter-spacing:.3em;
-  color:#e6f2f7;font-weight:600;}
-.nx-steptext{margin:12px auto 0;max-width:430px;font-size:11px;line-height:1.85;
-  letter-spacing:.1em;color:#b5c9d5;text-transform:none;}
-.nx-keys{margin-top:14px;display:flex;flex-wrap:wrap;gap:6px;justify-content:center;}
-.nx-keys span{padding:4px 7px;border:1px solid rgba(140,180,195,.28);
-  font-size:9px;letter-spacing:.12em;color:#c9dbe4;background:rgba(8,18,26,.6);}
-.nx-dots{display:flex;gap:6px;justify-content:center;margin-top:18px;}
-.nx-dots i{width:18px;height:2px;background:rgba(255,255,255,.16);}
-.nx-dots i.on{background:#6ed8cf;}
-.nx-brief{text-align:left;font-size:10px;line-height:2;color:#a9becb;letter-spacing:.12em;}
-.nx-brief b{color:#dcecf3;font-weight:500;}
-.nx-brief em{font-style:normal;color:#66c9c2;}
-.nx-touch{display:none;}
-@keyframes nxFade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-.nx-panel>*{animation:nxFade .22s ease-out both;}
-@media (max-width:720px),(pointer:coarse){
-  .nx-top{grid-template-columns:1fr auto;padding:8px 10px;gap:6px;}
-  .nx-brand{font-size:8px;}
-  .nx-brand span{display:none;}
-  .nx-obj{grid-column:1/-1;grid-row:2;justify-self:stretch;min-width:0;
-    font-size:9px;padding:5px 8px;}
-  .nx-obj small{display:inline;margin-left:8px;}
-  .nx-clock{font-size:8px;}
-  .nx-bottom{left:8px;bottom:8px;width:168px;padding:6px 8px;}
-  .nx-ammo b{font-size:16px;}
-  .nx-hpbar{margin:4px 0 6px;}
-  .nx-panel{padding:16px;}
-  .nx-steptext{font-size:10px;line-height:1.7;}
-  .nx-touch{display:block;position:absolute;inset:0;pointer-events:none;}
-  .nx-stick{position:absolute;left:20px;bottom:92px;width:104px;height:104px;
-    border:1px solid rgba(140,190,200,.32);border-radius:50%;pointer-events:none;
-    background:radial-gradient(circle,rgba(30,64,72,.32),rgba(8,18,24,.5));touch-action:none;}
-  .nx-knob{position:absolute;left:50%;top:50%;width:42px;height:42px;margin:-21px;
-    border:1px solid rgba(140,220,212,.62);border-radius:50%;
-    background:rgba(35,92,92,.5);}
-  .nx-look{position:absolute;right:0;top:0;width:55%;height:78%;pointer-events:none;touch-action:none;}
-  .nx-lookhint{position:absolute;right:12px;top:44%;font-size:8px;color:#5f7887;
-    letter-spacing:.18em;pointer-events:none;}
-  .nx-tbtns{position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;
-    gap:7px;align-items:flex-end;pointer-events:none;}
-  .nx-tbtn{pointer-events:auto;width:66px;height:38px;padding:0;font-size:9px;
-    border:1px solid rgba(120,200,200,.45);background:rgba(10,28,34,.78);
-    color:#d9ecef;font:inherit;letter-spacing:.14em;touch-action:none;}
-  .nx-tbtn.fire{height:52px;background:rgba(102,38,34,.68);border-color:rgba(255,120,100,.55);}
-  .nx-tbtn.on{background:rgba(30,86,88,.9);border-color:#9beee0;}
-}
-`;
+type Mode = "op" | "daily";
+type Modifier = { id: string; name: string; desc: string };
+const MODIFIERS: Modifier[] = [
+  { id: "night", name: "NIGHT OPS", desc: "Moonless sky, heavy fog. Neon is your only light." },
+  { id: "headhunt", name: "HEADHUNTER", desc: "Armored hostiles: body shots deal 45% less damage." },
+  { id: "scarce", name: "LOW SUPPLY", desc: "Half the reserve ammo, fewer drops." },
+  { id: "ironman", name: "IRONMAN", desc: "No health regeneration." },
+  { id: "blitz", name: "BLITZ", desc: "Hostiles react faster and shoot straighter." },
+];
 
-function makeCanvasTexture(
-  w: number,
-  h: number,
-  paint: (ctx: CanvasRenderingContext2D) => void,
-) {
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d");
-  if (ctx) paint(ctx);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+function todayUTC() {
+  return new Date().toISOString().slice(0, 10);
 }
 
-function labelTexture(text: string, color: string) {
-  return makeCanvasTexture(256, 96, (ctx) => {
-    ctx.clearRect(0, 0, 256, 96);
-    ctx.fillStyle = "rgba(4,10,15,.5)";
-    ctx.fillRect(62, 12, 132, 54);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
-    ctx.strokeRect(62, 12, 132, 54);
-    ctx.fillStyle = color;
-    ctx.font = "bold 30px ui-monospace, monospace";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(text, 128, 40);
-    ctx.fillRect(112, 78, 32, 3);
-  });
+function dailyOf(date: string) {
+  let h = 2166136261;
+  for (const c of date) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
+  const seed = h >>> 0;
+  return { date, seed, mod: MODIFIERS[seed % MODIFIERS.length] };
 }
 
-function flashTexture() {
-  return makeCanvasTexture(64, 64, (ctx) => {
-    const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 31);
-    g.addColorStop(0, "rgba(255,255,240,1)");
-    g.addColorStop(0.28, "rgba(255,212,140,.85)");
-    g.addColorStop(1, "rgba(255,160,80,0)");
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, 64, 64);
-  });
+function playerId() {
+  try {
+    let id = localStorage.getItem("playverse:pid");
+    if (!id || !/^[a-z0-9]{12,32}$/.test(id)) {
+      id = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => (b % 36).toString(36)).join("");
+      localStorage.setItem("playverse:pid", id);
+    }
+    return id;
+  } catch {
+    return "anon" + Math.random().toString(36).slice(2, 12);
+  }
 }
 
-function whiteTexture() {
-  return makeCanvasTexture(8, 8, (ctx) => {
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, 8, 8);
-  });
-}
+type BoardRow = { name: string; score: number; you: boolean };
+type BoardResp = { total: number; top: BoardRow[]; you: { rank: number; score: number } | null };
 
 export function createGame(container: HTMLElement, hooks: GameHooks): GameInstance {
-  // ------------------------------------------------------------------ state
   const rng = mulberry32(2100);
-  const coarse =
-    typeof window !== "undefined" && typeof window.matchMedia === "function"
-      ? window.matchMedia("(pointer: coarse)").matches
-      : false;
+  const fx = Math.random;
+  const coarse = typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
   const mobile = coarse || container.clientWidth < 720;
 
   const geometries = new Set<THREE.BufferGeometry>();
@@ -335,248 +284,189 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   const textures = new Set<THREE.Texture>();
   const sourceObjects: THREE.Object3D[] = [];
   const listeners: Array<() => void> = [];
-  const ownGeo = <T extends THREE.BufferGeometry>(g: T): T => {
-    geometries.add(g);
-    return g;
-  };
-  const ownMat = <T extends THREE.Material>(m: T): T => {
-    materials.add(m);
-    return m;
-  };
-  const ownTex = <T extends THREE.Texture>(t: T): T => {
-    textures.add(t);
-    return t;
+  const G = <X extends THREE.BufferGeometry>(g: X): X => (geometries.add(g), g);
+  const M = <X extends THREE.Material>(m: X): X => (materials.add(m), m);
+  const T = <X extends THREE.Texture>(t: X): X => (textures.add(t), t);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const on = (el: EventTarget, type: string, fn: (ev: any) => void, opts?: AddEventListenerOptions) => {
+    el.addEventListener(type, fn, opts);
+    listeners.push(() => el.removeEventListener(type, fn, opts));
   };
 
-  let disposed = false;
-  type Stage = "loading" | "tutorial" | "briefing" | "playing" | "ended";
+  const settings = store(SETTINGS_KEY, { sens: 1, vol: 0.8, muted: false });
+  let firstRun = true;
+  try {
+    firstRun = localStorage.getItem(SEEN_KEY) !== "1";
+  } catch {
+    /* ignore */
+  }
+  let best = hooks.best ?? 0;
+  const prog = loadProgress();
+  const equipped = (slot: Slot) => {
+    const id = prog.equip[slot];
+    const it = ITEMS[slot].find((i) => i.id === id);
+    return it && it.rank <= rankOf(prog.xp).index ? id : ITEMS[slot][0].id;
+  };
+  const load = { mag: 30, reloadExtra: 0, adsSpread: 1, recoil: 1, noise: 26, dmg: 1, adsFov: 48, visor: 0x6ff2e3 };
+  function applyLoadout() {
+    const ext = equipped("mag") === "ext";
+    const muz = equipped("muzzle");
+    const holo = equipped("optic") === "holo";
+    load.mag = ext ? 40 : 30;
+    load.reloadExtra = ext ? 0.25 : 0;
+    load.adsSpread = holo ? 0.6 : 1;
+    load.adsFov = holo ? 38 : 48;
+    load.recoil = muz === "comp" ? 0.65 : 1;
+    load.noise = muz === "supp" ? 9 : 26;
+    load.dmg = muz === "supp" ? 0.92 : 1;
+    load.visor = VISOR_COLORS[equipped("visor")] ?? 0x6ff2e3;
+  }
+  applyLoadout();
+  const pid = playerId();
+  let mode: Mode = "op";
+  const mod = { night: false, bodyDmg: 1, reserve: RESERVE, drop: 0.75, regen: true, enemyAcc: 1, reaction: 1 };
+  // per-run medal tracking
+  let runMedals: Record<string, number> = {};
+  let killTimes: number[] = [];
+  let hsStreak = 0;
+  let phaseDamage = 0;
+  let allyWentDown = false;
+
+  // ------------------------------------------------------------- state
+  type Stage = "loading" | "menu" | "playing" | "paused" | "dead" | "debrief";
   let stage: Stage = "loading";
-  let ended = false;
-  let success = false;
+  let disposed = false;
+  let phase = 1;
+  let phaseTimer = 0;
+  let pendingWave = 0;
+  let uplink = 0;
+  let uplinkStarted = false;
   let elapsed = 0;
+  let menuTime = 0;
   let kills = 0;
+  let headshots = 0;
   let shots = 0;
   let hits = 0;
-  let scoreClock = 0;
+  let bonus = 0;
+  let success = false;
+  let deathTimer = 0;
   let timeScale = 1;
   let slowTimer = 0;
   let shake = 0;
-  let hitTimer = 0;
-  let score = 0;
+  let damageFlash = 0;
+  let lastHurt = 99;
+  let quietTime = 0;
 
-  let tutStep = 0;
-  let tutMoved = 0;
-  let lastMarkerDist = -1;
-
-  const soldiers: Soldier[] = [];
-  const enemies: Soldier[] = [];
-  const allies: Soldier[] = [];
   let player: Soldier | null = null;
-  const enemyByMesh = new Map<THREE.Object3D, Soldier>();
-  const coverMeshes: THREE.Object3D[] = [];
+  const soldiers: Soldier[] = [];
+  const allies: Soldier[] = [];
+  const enemies: Soldier[] = [];
+  const pickups: Pickup[] = [];
+  const blockers: THREE.Mesh[] = [];
   const solidBoxes: THREE.Box3[] = [];
-  const popupTimes = new Map<string, number>();
+  const coverPoints: CoverPoint[] = [];
+  let nextId = 1;
+
+  let yaw = Math.PI;
+  let pitch = -0.03;
+  let recoil = 0;
+  let recoilYaw = 0;
+  let ads = false;
+  let adsBlend = 0;
+  let shoulder = 1;
+  let shoulderBlend = 1;
+  let firing = false;
+  let fireCd = 0;
+  let bloom = 0;
+  let ammo = MAG;
+  let reserve = RESERVE;
+  let reloadT = 0;
+  let reloadDur = 0;
+  let reloadStage = 0;
+  let lastShot = 99;
+  let sprintHeld = false;
+  let stepDist = 0;
+  let movedTotal = 0;
+  let shotsFired = 0;
+  let hintStep = firstRun ? 0 : 99;
+  let hintTimer = 0;
+  let aimEnemy = false;
+  const keys = new Set<string>();
+  const moveIn = new THREE.Vector2();
+
+  const fwd3 = new THREE.Vector3();
+  const camRight = new THREE.Vector3();
+  const aimPoint = new THREE.Vector3();
+  const tmpV = new THREE.Vector3();
+  const tmpV2 = new THREE.Vector3();
+  const tmpV3 = new THREE.Vector3();
+  const ray = new THREE.Raycaster();
+  const losRay = new THREE.Raycaster();
 
   let viewW = Math.max(1, container.clientWidth);
   let viewH = Math.max(1, container.clientHeight);
 
-  // Camera state: yaw=PI means facing down the street toward -Z.
-  let yaw = Math.PI;
-  let pitch = -0.04;
-  let ads = false;
-  let adsBlend = 0;
-  const camForward = new THREE.Vector3(0, 0, -1);
-  const camRight = new THREE.Vector3(1, 0, 0);
+  // --------------------------------------------------------------- HUD
+  const hud = buildHud(container, mobile);
+  const audio = createAudio();
+  audio.setVolume(settings.muted ? 0 : settings.vol);
 
-  const keys = new Set<string>();
-  const moveInput = new THREE.Vector2();
-  const joy = { active: false, id: -1, x: 0, y: 0 };
-  let firing = false;
-  let fireCd = 0;
-  let lookId = -1;
-  let lookX = 0;
-  let lookY = 0;
-  let mouseDragId = -1;
-  let mouseDragX = 0;
-  let mouseDragY = 0;
-
-  // ------------------------------------------------------------------- HUD
-  const style = document.createElement("style");
-  style.textContent = HUD_CSS;
-  container.appendChild(style);
-
-  const root = document.createElement("div");
-  root.className = "nx-root";
-  container.appendChild(root);
-
-  const top = document.createElement("div");
-  top.className = "nx-top";
-  top.innerHTML =
-    '<div class="nx-brand"><b>NEXUS 2100</b> · DISTRICT 07<span>TACTICAL NETWORK // SECTOR LIVE</span></div>' +
-    '<div class="nx-obj" id="nx-obj">HOSTILES 5/5<small>RANGE 45M</small></div>' +
-    '<div class="nx-clock">T <strong id="nx-time">00:00</strong><span>SCORE <b id="nx-score">0</b></span></div>';
-  root.appendChild(top);
-  const objectiveEl = top.querySelector("#nx-obj") as HTMLElement;
-  const timeEl = top.querySelector("#nx-time") as HTMLElement;
-  const scoreEl = top.querySelector("#nx-score") as HTMLElement;
-
-  const bottom = document.createElement("div");
-  bottom.className = "nx-bottom";
-  bottom.innerHTML =
-    '<div class="nx-lbl"><span>OPERATOR VITALS</span><span class="nx-hpnum">100 / 100</span></div>' +
-    '<div class="nx-hpbar"><i></i></div>' +
-    '<div class="nx-ammo"><span>AMMO · MK18</span><b class="nx-ammoval">24<em>/24</em></b></div>';
-  root.appendChild(bottom);
-  const hpBar = bottom.querySelector(".nx-hpbar") as HTMLElement;
-  const hpFillEl = bottom.querySelector(".nx-hpbar > i") as HTMLElement;
-  const hpNumEl = bottom.querySelector(".nx-hpnum") as HTMLElement;
-  const ammoEl = bottom.querySelector(".nx-ammoval") as HTMLElement;
-
-  const reticle = document.createElement("div");
-  reticle.className = "nx-reticle";
-  reticle.innerHTML = "<i></i><i></i><i></i><i></i><i></i>";
-  root.appendChild(reticle);
-  const hitmark = document.createElement("div");
-  hitmark.className = "nx-hit";
-  hitmark.innerHTML = "<i></i><i></i>";
-  root.appendChild(hitmark);
-
-  const edge = document.createElement("div");
-  edge.className = "nx-edge";
-  edge.innerHTML = '<span class="nx-arw">➤</span><span class="nx-dist">HOSTILE 34M</span>';
-  root.appendChild(edge);
-  const edgeArrow = edge.querySelector(".nx-arw") as HTMLElement;
-  const edgeLabel = edge.querySelector(".nx-dist") as HTMLElement;
-
-  // Touch controls (hidden on desktop via CSS).
-  const touch = document.createElement("div");
-  touch.className = "nx-touch";
-  touch.innerHTML =
-    '<div class="nx-stick" id="nx-stick"><div class="nx-knob" id="nx-knob"></div></div>' +
-    '<div class="nx-look" id="nx-look"></div>' +
-    '<div class="nx-lookhint">DRAG TO LOOK</div>' +
-    '<div class="nx-tbtns">' +
-    '<button type="button" class="nx-tbtn" id="nx-t-reload">RELOAD</button>' +
-    '<button type="button" class="nx-tbtn" id="nx-t-ads">ADS</button>' +
-    '<button type="button" class="nx-tbtn fire" id="nx-t-fire">FIRE</button>' +
-    "</div>";
-  root.appendChild(touch);
-  const stickEl = touch.querySelector("#nx-stick") as HTMLElement;
-  const knobEl = touch.querySelector("#nx-knob") as HTMLElement;
-  const lookEl = touch.querySelector("#nx-look") as HTMLElement;
-  const tFire = touch.querySelector("#nx-t-fire") as HTMLButtonElement;
-  const tAds = touch.querySelector("#nx-t-ads") as HTMLButtonElement;
-  const tReload = touch.querySelector("#nx-t-reload") as HTMLButtonElement;
-
-  // Overlay shared by loading / briefing / tutorial.
-  const overlay = document.createElement("div");
-  overlay.className = "nx-overlay";
-  root.appendChild(overlay);
-
-  function popup(text: string) {
-    if (!hooks.onPopup) return;
-    const now = performance.now();
-    if (now - (popupTimes.get(text) ?? -9999) < 900) return;
-    popupTimes.set(text, now);
-    hooks.onPopup(text);
-  }
-
-  // --------------------------------------------------------------- renderer
-  const renderer = new THREE.WebGLRenderer({
-    antialias: !mobile,
-    powerPreference: "high-performance",
-    alpha: false,
-  });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.6));
+  // ----------------------------------------------------------- renderer
+  const renderer = new THREE.WebGLRenderer({ antialias: mobile, powerPreference: "high-performance", alpha: false });
+  const pixelRatio = () => Math.min(window.devicePixelRatio || 1, 1.5);
+  renderer.setPixelRatio(pixelRatio());
   renderer.setSize(viewW, viewH);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.3;
+  renderer.toneMappingExposure = 0.95;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.domElement.style.display = "block";
   renderer.domElement.style.touchAction = "none";
-  container.insertBefore(renderer.domElement, style);
+  container.insertBefore(renderer.domElement, hud.style);
+  const canvas = renderer.domElement;
 
+  const FOG = 0x1d1b2b;
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0b1422);
-  scene.fog = new THREE.FogExp2(0x0b1422, 0.0135);
+  scene.background = new THREE.Color(FOG);
+  scene.fog = new THREE.FogExp2(FOG, 0.026);
 
-  const camera = new THREE.PerspectiveCamera(60, viewW / viewH, 0.08, 220);
-  camera.position.set(1.1, 2.4, 29.2);
-  camera.lookAt(0, 1.5, 20);
+  const camera = new THREE.PerspectiveCamera(66, viewW / viewH, 0.05, 400);
+  camera.position.set(4, 5, 34);
 
-  const sun = new THREE.DirectionalLight(0xffcf9c, 2.2);
-  sun.position.set(-24, 32, 12);
+  const sun = new THREE.DirectionalLight(0xff9f6a, 1.7);
   sun.castShadow = true;
   sun.shadow.mapSize.set(mobile ? 1024 : 2048, mobile ? 1024 : 2048);
-  sun.shadow.camera.left = -40;
-  sun.shadow.camera.right = 40;
-  sun.shadow.camera.top = 40;
-  sun.shadow.camera.bottom = -40;
-  sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 120;
-  sun.shadow.bias = -0.0004;
-  sun.shadow.normalBias = 0.03;
-  scene.add(sun);
-  scene.add(sun.target);
-  scene.add(new THREE.HemisphereLight(0x91bcff, 0x1d2734, 1.15));
-  scene.add(new THREE.AmbientLight(0x8ba4bc, 0.35));
+  const sc = sun.shadow.camera;
+  sc.left = -30;
+  sc.right = 30;
+  sc.top = 30;
+  sc.bottom = -30;
+  sc.near = 1;
+  sc.far = 140;
+  sun.shadow.bias = -0.0005;
+  sun.shadow.normalBias = 0.04;
+  scene.add(sun, sun.target);
+  const hemi = new THREE.HemisphereLight(0x7d8fc4, 0x231c2a, 0.55);
+  scene.add(hemi);
+  const muzzleLight = new THREE.PointLight(0xffc27a, 0, 9, 2);
+  scene.add(muzzleLight);
 
-  // ------------------------------------------------------------ ground only
-  const groundTex = ownTex(
-    makeCanvasTexture(512, 512, (ctx) => {
-      ctx.fillStyle = "#2a3340";
-      ctx.fillRect(0, 0, 512, 512);
-      const img = ctx.getImageData(0, 0, 512, 512);
-      for (let i = 0; i < img.data.length; i += 4) {
-        const n = (rng() - 0.5) * 22;
-        img.data[i] = Math.max(0, Math.min(255, img.data[i] + n));
-        img.data[i + 1] = Math.max(0, Math.min(255, img.data[i + 1] + n));
-        img.data[i + 2] = Math.max(0, Math.min(255, img.data[i + 2] + n));
-      }
-      ctx.putImageData(img, 0, 0);
-      ctx.strokeStyle = "rgba(150,178,196,.07)";
-      ctx.lineWidth = 2;
-      for (let p = 0; p <= 512; p += 128) {
-        ctx.beginPath();
-        ctx.moveTo(p, 0);
-        ctx.lineTo(p, 512);
-        ctx.moveTo(0, p);
-        ctx.lineTo(512, p);
-        ctx.stroke();
-      }
-      ctx.strokeStyle = "rgba(216,196,132,.13)";
-      ctx.lineWidth = 3;
-      ctx.setLineDash([26, 34]);
-      for (const p of [128, 384]) {
-        ctx.beginPath();
-        ctx.moveTo(p, 0);
-        ctx.lineTo(p, 512);
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
-      ctx.strokeStyle = "rgba(120,205,210,.055)";
-      ctx.lineWidth = 1;
-      for (let i = 0; i < 18; i++) {
-        const x = rng() * 512;
-        const y = rng() * 512;
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(x + 40 + rng() * 90, y + (rng() - 0.5) * 12);
-        ctx.stroke();
-      }
-    }),
-  );
-  groundTex.wrapS = groundTex.wrapT = THREE.RepeatWrapping;
-  groundTex.repeat.set(2, 5);
-  groundTex.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
+  // -------------------------------------------------------- ground + road
+  const asph = asphalt(rng);
+  T(asph.map);
+  T(asph.rough);
+  asph.map.repeat.set(14, 14);
+  asph.rough.repeat.set(14, 14);
+  asph.map.anisotropy = asph.rough.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   const ground = new THREE.Mesh(
-    ownGeo(new THREE.PlaneGeometry(WORLD_HALF * 2, WORLD_HALF * 2)),
-    ownMat(
+    G(new THREE.PlaneGeometry(220, 220)),
+    M(
       new THREE.MeshStandardMaterial({
-        map: groundTex,
-        roughness: 0.5,
-        metalness: 0.12,
+        map: asph.map,
+        roughnessMap: asph.rough,
+        roughness: 1,
+        metalness: 0.05,
+        envMapIntensity: 0.4,
       }),
     ),
   );
@@ -584,1198 +474,1745 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   ground.receiveShadow = true;
   scene.add(ground);
 
-  // Street center dashes (ground decal only).
-  const dashGeo = ownGeo(new THREE.PlaneGeometry(0.13, 1.5));
-  const dashMat = ownMat(
-    new THREE.MeshBasicMaterial({
-      color: 0xc7b87c,
-      transparent: true,
-      opacity: 0.22,
-      depthWrite: false,
-    }),
-  );
-  for (let z = -32; z <= 32; z += 4) {
-    const d = new THREE.Mesh(dashGeo, dashMat);
+  const swTex = T(sidewalk(rng));
+  swTex.repeat.set(1.2, 30);
+  const swMat = M(new THREE.MeshStandardMaterial({ map: swTex, roughness: 0.55, metalness: 0.05, envMapIntensity: 0.9 }));
+  const curbMat = M(new THREE.MeshStandardMaterial({ color: 0x8b9096, roughness: 0.6 }));
+  const swGeo = G(new THREE.BoxGeometry(3.2, 0.12, 2 * WORLD_HALF + 10));
+  const curbGeo = G(new THREE.BoxGeometry(0.2, 0.15, 2 * WORLD_HALF + 10));
+  for (const side of [-1, 1]) {
+    const sw = new THREE.Mesh(swGeo, swMat);
+    sw.position.set(side * (ROAD_HALF + 1.7), 0.06, 0);
+    sw.receiveShadow = true;
+    scene.add(sw);
+    const curb = new THREE.Mesh(curbGeo, curbMat);
+    curb.position.set(side * (ROAD_HALF + 0.08), 0.075, 0);
+    curb.receiveShadow = true;
+    scene.add(curb);
+  }
+  const lineMat = M(new THREE.MeshBasicMaterial({ color: 0xd8d2b4, transparent: true, opacity: 0.55, depthWrite: false }));
+  const lineGeo = G(new THREE.PlaneGeometry(0.14, 1.8));
+  for (let z = -WORLD_HALF; z <= WORLD_HALF; z += 4.5) {
+    const d = new THREE.Mesh(lineGeo, lineMat);
     d.rotation.x = -Math.PI / 2;
     d.position.set(0, 0.012, z);
     scene.add(d);
   }
+  const edgeGeo = G(new THREE.PlaneGeometry(0.1, 2 * WORLD_HALF + 10));
+  for (const side of [-1, 1]) {
+    const e = new THREE.Mesh(edgeGeo, lineMat);
+    e.rotation.x = -Math.PI / 2;
+    e.position.set(side * (ROAD_HALF - 0.4), 0.012, 0);
+    scene.add(e);
+  }
+  const zebraGeo = G(new THREE.PlaneGeometry(0.55, 3));
+  for (const zc of [17.5, -9]) {
+    for (let x = -5.2; x <= 5.2; x += 1.1) {
+      const s = new THREE.Mesh(zebraGeo, lineMat);
+      s.rotation.x = -Math.PI / 2;
+      s.position.set(x, 0.013, zc);
+      scene.add(s);
+    }
+  }
 
-  // Extraction pad, dormant until all hostiles are down.
-  const extractGroup = new THREE.Group();
-  extractGroup.position.copy(EXTRACTION);
-  scene.add(extractGroup);
-  const extractOuter = new THREE.Mesh(
-    ownGeo(new THREE.RingGeometry(2.18, 2.34, 64)),
-    ownMat(
-      new THREE.MeshBasicMaterial({
-        color: 0x3f6d74,
-        transparent: true,
-        opacity: 0.42,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      }),
-    ),
+  // ------------------------------------------------------------- rain
+  const RAIN = mobile ? 500 : 1500;
+  const rainPos = new Float32Array(RAIN * 6);
+  const rainGeo = G(new THREE.BufferGeometry());
+  rainGeo.setAttribute("position", new THREE.BufferAttribute(rainPos, 3));
+  const rainMat = M(new THREE.LineBasicMaterial({ color: 0xa9bfd4, transparent: true, opacity: 0.28, depthWrite: false }));
+  const rain = new THREE.LineSegments(rainGeo, rainMat);
+  rain.frustumCulled = false;
+  scene.add(rain);
+  for (let i = 0; i < RAIN; i++) {
+    const x = (rng() - 0.5) * 36;
+    const y = rng() * 16;
+    const z = (rng() - 0.5) * 36;
+    rainPos.set([x, y, z, x - 0.04, y + 0.5, z + 0.015], i * 6);
+  }
+
+  // ---------------------------------------------------------- extraction
+  const extract = new THREE.Group();
+  extract.position.copy(EXTRACT);
+  scene.add(extract);
+  const padMat = M(
+    new THREE.MeshBasicMaterial({ color: 0x3c6e74, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false }),
   );
-  extractOuter.rotation.x = -Math.PI / 2;
-  extractOuter.position.y = 0.04;
-  extractGroup.add(extractOuter);
-  const extractInner = new THREE.Group();
-  extractInner.position.y = 0.05;
-  extractGroup.add(extractInner);
-  const extractDashMat = ownMat(
+  const padRing = new THREE.Mesh(G(new THREE.RingGeometry(2.3, 2.42, 72)), padMat);
+  padRing.rotation.x = -Math.PI / 2;
+  padRing.position.y = 0.03;
+  extract.add(padRing);
+  const progMat = M(
+    new THREE.MeshBasicMaterial({ color: 0x6ff2e3, transparent: true, opacity: 0.95, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  const progGeo = G(new THREE.RingGeometry(2.5, 2.72, 96, 1));
+  const progRing = new THREE.Mesh(progGeo, progMat);
+  progRing.rotation.x = -Math.PI / 2;
+  progRing.rotation.z = Math.PI / 2;
+  progRing.position.y = 0.035;
+  progGeo.setDrawRange(0, 0);
+  extract.add(progRing);
+  const padInner = new THREE.Group();
+  padInner.position.y = 0.04;
+  extract.add(padInner);
+  const dashGeo = G(new THREE.PlaneGeometry(0.14, 0.55));
+  for (let i = 0; i < 24; i++) {
+    const a = (i / 24) * Math.PI * 2;
+    const d = new THREE.Mesh(dashGeo, padMat);
+    d.rotation.x = -Math.PI / 2;
+    d.rotation.z = -a;
+    d.position.set(Math.cos(a) * 1.7, 0, Math.sin(a) * 1.7);
+    padInner.add(d);
+  }
+  const fadeTex = T(verticalFade());
+  const beamMat = M(
     new THREE.MeshBasicMaterial({
-      color: 0x4d9ba0,
+      color: 0x6ff2e3,
+      alphaMap: fadeTex,
       transparent: true,
-      opacity: 0.5,
-      side: THREE.DoubleSide,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
       depthWrite: false,
+      side: THREE.DoubleSide,
     }),
   );
-  const extractDashGeo = ownGeo(new THREE.PlaneGeometry(0.15, 0.6));
-  for (let i = 0; i < 28; i++) {
-    const a = (i / 28) * Math.PI * 2;
-    const dash = new THREE.Mesh(extractDashGeo, extractDashMat);
-    dash.rotation.x = -Math.PI / 2;
-    dash.rotation.z = -a;
-    dash.position.set(Math.cos(a) * 1.55, 0, Math.sin(a) * 1.55);
-    extractInner.add(dash);
-  }
+  const beamGeo = G(new THREE.CylinderGeometry(0.55, 1.1, 30, 32, 1, true));
+  const beam = new THREE.Mesh(beamGeo, beamMat);
+  beam.position.y = 15;
+  beam.rotation.x = Math.PI;
+  extract.add(beam);
 
-  // ------------------------------------------------------------- pooled FX
-  const tracerGeo = ownGeo(new THREE.CylinderGeometry(0.015, 0.015, 1, 5, 1, true));
+  // --------------------------------------------------------------- FX
+  const tracerGeo = G(new THREE.CylinderGeometry(0.012, 0.012, 1, 5, 1, true));
+  tracerGeo.rotateX(Math.PI / 2);
+  tracerGeo.translate(0, 0, 0.5);
   const tracers: Tracer[] = [];
-  for (let i = 0; i < 54; i++) {
-    const material = ownMat(
-      new THREE.MeshBasicMaterial({
-        color: 0xffd9a8,
-        transparent: true,
-        opacity: 0,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      }),
+  for (let i = 0; i < 48; i++) {
+    const mat = M(
+      new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }),
     );
-    const mesh = new THREE.Mesh(tracerGeo, material);
+    const mesh = new THREE.Mesh(tracerGeo, mat);
     mesh.visible = false;
+    mesh.frustumCulled = false;
     scene.add(mesh);
-    tracers.push({ mesh, life: 0, material });
+    tracers.push({ mesh, mat, from: new THREE.Vector3(), dir: new THREE.Vector3(), dist: 0, t: 0, speed: 0, len: 0, on: false });
   }
-  let tracerCursor = 0;
+  let tracerI = 0;
 
+  const SPARK_N = 14;
   const sparks: Spark[] = [];
-  for (let i = 0; i < 22; i++) {
-    const geo = ownGeo(new THREE.BufferGeometry());
-    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(12 * 3), 3));
-    const material = ownMat(
-      new THREE.PointsMaterial({
-        color: 0xffce8a,
-        size: 0.075,
-        transparent: true,
-        opacity: 0,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      }),
+  for (let i = 0; i < 26; i++) {
+    const geo = G(new THREE.BufferGeometry());
+    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(SPARK_N * 3), 3));
+    const mat = M(
+      new THREE.PointsMaterial({ color: 0xffce8a, size: 0.06, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }),
     );
-    const points = new THREE.Points(geo, material);
-    points.visible = false;
-    scene.add(points);
-    sparks.push({
-      points,
-      vel: Array.from({ length: 12 }, () => new THREE.Vector3()),
-      life: 0,
-      material,
-    });
+    const pts = new THREE.Points(geo, mat);
+    pts.visible = false;
+    pts.frustumCulled = false;
+    scene.add(pts);
+    sparks.push({ pts, mat, vel: new Float32Array(SPARK_N * 3), life: 0 });
   }
-  let sparkCursor = 0;
+  let sparkI = 0;
 
-  const flashTex = ownTex(flashTexture());
-  const flashes: Flash[] = [];
-  for (let i = 0; i < 18; i++) {
-    const material = ownMat(
-      new THREE.SpriteMaterial({
-        map: flashTex,
-        color: 0xffd9a8,
-        transparent: true,
-        opacity: 0,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      }),
+  const dotTex = T(softDot());
+  const puffs: Puff[] = [];
+  for (let i = 0; i < 30; i++) {
+    const mat = M(new THREE.SpriteMaterial({ map: dotTex, color: 0x8a8f96, transparent: true, opacity: 0, depthWrite: false }));
+    const sp = new THREE.Sprite(mat);
+    sp.visible = false;
+    scene.add(sp);
+    puffs.push({ sp, mat, life: 0, max: 1, grow: 1 });
+  }
+  let puffI = 0;
+
+  const flashT = T(flashTex());
+  const flashes: Puff[] = [];
+  for (let i = 0; i < 16; i++) {
+    const mat = M(
+      new THREE.SpriteMaterial({ map: flashT, color: 0xffe0b0, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }),
     );
-    const sprite = new THREE.Sprite(material);
-    sprite.scale.setScalar(0.62);
-    sprite.visible = false;
-    scene.add(sprite);
-    flashes.push({ sprite, life: 0, material });
+    const sp = new THREE.Sprite(mat);
+    sp.visible = false;
+    scene.add(sp);
+    flashes.push({ sp, mat, life: 0, max: 0.06, grow: 0 });
   }
-  let flashCursor = 0;
+  let flashI = 0;
 
-  function spawnTracer(from: THREE.Vector3, to: THREE.Vector3, color: number) {
-    const t = tracers[tracerCursor++ % tracers.length];
-    const dir = new THREE.Vector3().subVectors(to, from);
-    const len = dir.length();
-    if (len < 0.01) return;
-    t.mesh.position.copy(from).addScaledVector(dir, 0.5);
-    t.mesh.quaternion.setFromUnitVectors(UP, dir.normalize());
-    t.mesh.scale.set(1, len, 1);
-    t.material.color.setHex(color);
-    t.material.opacity = 0.95;
-    t.life = 0.11;
+  function spawnTracer(from: THREE.Vector3, to: THREE.Vector3, color: number, speed = 260) {
+    const t = tracers[tracerI++ % tracers.length];
+    t.from.copy(from);
+    t.dir.subVectors(to, from);
+    t.dist = t.dir.length();
+    if (t.dist < 0.2) return;
+    t.dir.divideScalar(t.dist);
+    t.t = 0;
+    t.speed = speed;
+    t.len = Math.min(3.2, t.dist);
+    t.on = true;
+    t.mat.color.setHex(color);
     t.mesh.visible = true;
-    shake = Math.min(0.4, shake + 0.035);
+    t.mesh.position.copy(from);
+    t.mesh.lookAt(tmpV.copy(from).add(t.dir));
+    t.mesh.scale.set(1, 1, 0.001);
   }
 
-  function spawnSparks(at: THREE.Vector3, color = 0xffce8a) {
-    const s = sparks[sparkCursor++ % sparks.length];
-    const attr = s.points.geometry.getAttribute("position") as THREE.BufferAttribute;
-    for (let i = 0; i < s.vel.length; i++) {
+  function spawnSparks(at: THREE.Vector3, color: number, n = 1, normal?: THREE.Vector3) {
+    const s = sparks[sparkI++ % sparks.length];
+    const attr = s.pts.geometry.getAttribute("position") as THREE.BufferAttribute;
+    for (let i = 0; i < SPARK_N; i++) {
       attr.setXYZ(i, at.x, at.y, at.z);
-      s.vel[i].set((rng() - 0.5) * 3.2, rng() * 2.4 + 0.35, (rng() - 0.5) * 3.2);
+      let vx = (fx() - 0.5) * 4 * n;
+      let vy = fx() * 3 * n + 0.4;
+      let vz = (fx() - 0.5) * 4 * n;
+      if (normal) {
+        vx += normal.x * 2.2;
+        vy += normal.y * 2.2;
+        vz += normal.z * 2.2;
+      }
+      s.vel[i * 3] = vx;
+      s.vel[i * 3 + 1] = vy;
+      s.vel[i * 3 + 2] = vz;
     }
     attr.needsUpdate = true;
-    s.material.color.setHex(color);
-    s.material.opacity = 1;
-    s.life = 0.26;
-    s.points.visible = true;
+    s.mat.color.setHex(color);
+    s.mat.opacity = 1;
+    s.life = 0.32;
+    s.pts.visible = true;
   }
 
-  function spawnFlash(at: THREE.Vector3, enemy: boolean) {
-    const f = flashes[flashCursor++ % flashes.length];
-    f.sprite.position.copy(at);
-    f.sprite.material.color.setHex(enemy ? 0xff9270 : 0xffd9a8);
-    f.material.opacity = 1;
-    f.life = 0.085;
-    f.sprite.visible = true;
+  function spawnPuff(at: THREE.Vector3, color: number, size: number, life: number, opacity = 0.5) {
+    const p = puffs[puffI++ % puffs.length];
+    p.sp.position.copy(at);
+    p.mat.color.setHex(color);
+    p.mat.opacity = opacity;
+    p.life = life;
+    p.max = life;
+    p.grow = size;
+    p.sp.scale.setScalar(size * 0.3);
+    p.sp.visible = true;
   }
 
-  function showHit(kill: boolean) {
-    hitTimer = 0.15;
-    hitmark.classList.toggle("kill", kill);
-    hitmark.style.display = "block";
+  function spawnFlash(at: THREE.Vector3, size: number) {
+    const f = flashes[flashI++ % flashes.length];
+    f.sp.position.copy(at);
+    f.sp.scale.setScalar(size * (0.8 + fx() * 0.4));
+    f.mat.rotation = fx() * Math.PI;
+    f.mat.opacity = 1;
+    f.life = f.max = 0.055;
+    f.sp.visible = true;
   }
 
-  // ----------------------------------------------------------------- audio
-  let actx: AudioContext | null = null;
-  let master: GainNode | null = null;
-
-  function ensureAudio() {
-    if (actx) {
-      if (actx.state === "suspended") void actx.resume();
-      return;
+  function updateFx(dt: number) {
+    for (const t of tracers) {
+      if (!t.on) continue;
+      t.t += t.speed * dt;
+      const head = Math.min(t.dist, t.t);
+      const tail = Math.max(0, t.t - t.len);
+      if (tail >= t.dist) {
+        t.on = false;
+        t.mesh.visible = false;
+        continue;
+      }
+      t.mesh.position.copy(t.from).addScaledVector(t.dir, tail);
+      t.mesh.scale.set(1, 1, Math.max(0.001, head - tail));
     }
-    try {
-      const ctor =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      actx = new ctor();
-      master = actx.createGain();
-      master.gain.value = 0.14;
-      master.connect(actx.destination);
-    } catch {
-      actx = null;
-      master = null;
+    for (const s of sparks) {
+      if (s.life <= 0) continue;
+      s.life -= dt;
+      const attr = s.pts.geometry.getAttribute("position") as THREE.BufferAttribute;
+      for (let i = 0; i < SPARK_N; i++) {
+        s.vel[i * 3 + 1] -= 9.8 * dt;
+        attr.setXYZ(
+          i,
+          attr.getX(i) + s.vel[i * 3] * dt,
+          Math.max(0.01, attr.getY(i) + s.vel[i * 3 + 1] * dt),
+          attr.getZ(i) + s.vel[i * 3 + 2] * dt,
+        );
+      }
+      attr.needsUpdate = true;
+      s.mat.opacity = Math.max(0, s.life / 0.32);
+      if (s.life <= 0) s.pts.visible = false;
     }
-  }
-
-  function noise(dur: number, freq: number, q: number, vol: number, type: BiquadFilterType) {
-    if (!actx || !master) return;
-    const n = Math.max(1, Math.floor(actx.sampleRate * dur));
-    const buf = actx.createBuffer(1, n, actx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
-    const src = actx.createBufferSource();
-    src.buffer = buf;
-    const filter = actx.createBiquadFilter();
-    filter.type = type;
-    filter.frequency.value = freq;
-    filter.Q.value = q;
-    const gain = actx.createGain();
-    gain.gain.value = vol;
-    src.connect(filter);
-    filter.connect(gain);
-    gain.connect(master);
-    src.start();
-  }
-
-  function tone(f0: number, f1: number, dur: number, vol: number, type: OscillatorType, delay = 0) {
-    if (!actx || !master) return;
-    const t = actx.currentTime + delay;
-    const osc = actx.createOscillator();
-    osc.type = type;
-    osc.frequency.setValueAtTime(f0, t);
-    osc.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
-    const gain = actx.createGain();
-    gain.gain.setValueAtTime(vol, t);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    osc.connect(gain);
-    gain.connect(master);
-    osc.start(t);
-    osc.stop(t + dur + 0.01);
-  }
-
-  const sfx = {
-    rifle() {
-      noise(0.05, 1500, 0.9, 0.3, "bandpass");
-      tone(118, 55, 0.08, 0.18, "sine");
-    },
-    enemy() {
-      noise(0.08, 520, 0.8, 0.26, "lowpass");
-      tone(72, 44, 0.12, 0.18, "sine");
-    },
-    hit() {
-      tone(1500, 820, 0.04, 0.11, "square");
-    },
-    reload() {
-      tone(920, 920, 0.02, 0.13, "square");
-      tone(690, 690, 0.02, 0.11, "square", 0.11);
-    },
-    death() {
-      tone(220, 46, 0.5, 0.22, "sawtooth");
-    },
-    ui() {
-      tone(760, 960, 0.06, 0.09, "sine");
-    },
-  };
-
-  // -------------------------------------------------------------- loading UI
-  function showLoading() {
-    overlay.innerHTML =
-      '<div class="nx-panel">' +
-      '<div class="nx-kicker">TACTICAL NETWORK // DISTRICT 07</div>' +
-      '<div class="nx-title">INITIALIZING SIMULATION</div>' +
-      '<div class="nx-rule"></div>' +
-      '<div class="nx-bar"><i id="nx-barfill"></i></div>' +
-      '<div class="nx-pct" id="nx-pct">0%</div>' +
-      '<div class="nx-loadlines">' +
-      '<div><span>LOADING OPERATORS</span><b id="nx-l-op">···</b></div>' +
-      '<div><span>LOADING DISTRICT</span><b id="nx-l-env">···</b></div>' +
-      '<div><span>LOADING LIGHT</span><b id="nx-l-hdr">···</b></div>' +
-      "</div>" +
-      '<div class="nx-error" id="nx-error"></div>' +
-      "</div>";
-  }
-
-  function bindBegin(text: string, onBegin: () => void) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "nx-btn";
-    btn.textContent = text;
-    const panel = overlay.querySelector(".nx-panel");
-    panel?.appendChild(btn);
-    btn.addEventListener("click", () => {
-      sfx.ui();
-      onBegin();
-    });
-    listeners.push(() => btn.remove());
-  }
-
-  function showBriefing() {
-    const lines = mobile
-      ? "<div><b>MOVE</b> · <em>LEFT DRAG</em> &nbsp; <b>AIM</b> · <em>RIGHT DRAG</em></div>" +
-        "<div><b>FIRE</b> · <em>FIRE BUTTON</em> &nbsp; <b>ADS</b> · <em>ADS BUTTON</em></div>" +
-        "<div><b>RELOAD</b> · <em>RELOAD BUTTON</em></div>"
-      : "<div><b>MOVE</b> · <em>W A S D</em> &nbsp; <b>SPRINT</b> · <em>SHIFT</em></div>" +
-        "<div><b>AIM</b> · <em>MOUSE</em> &nbsp; <b>FIRE</b> · <em>LEFT CLICK</em> &nbsp; <b>ADS</b> · <em>RIGHT CLICK</em></div>" +
-        "<div><b>RELOAD</b> · <em>R</em> &nbsp; <b>RELEASE MOUSE</b> · <em>ESC</em></div>";
-    overlay.innerHTML =
-      '<div class="nx-panel">' +
-      '<div class="nx-kicker">FIELD BRIEFING // OPERATION NIGHTFALL</div>' +
-      '<div class="nx-title">NEXUS 2100</div>' +
-      '<div class="nx-rule"></div>' +
-      '<div class="nx-brief">' +
-      lines +
-      "<div><b>OBJECTIVE</b> · ELIMINATE 5 HOSTILES, THEN REACH EXTRACTION</div>" +
-      "</div>" +
-      "</div>";
-    bindBegin("BEGIN OPERATION", beginOperation);
-  }
-
-  function showTutorial() {
-    const steps = mobile
-      ? [
-          {
-            num: "01",
-            title: "MOVE",
-            text: "Drag the LEFT side of the screen to move. Your squad follows you.",
-            keys: ["LEFT DRAG", "MOVE"],
-          },
-          {
-            num: "02",
-            title: "AIM & FIRE",
-            text: "Drag the RIGHT side to aim. Tap FIRE to shoot, ADS to aim down sights.",
-            keys: ["RIGHT DRAG", "FIRE", "ADS", "RELOAD"],
-          },
-          {
-            num: "03",
-            title: "OBJECTIVE",
-            text: "Eliminate 5 hostiles. Red markers show where they are. Then reach extraction.",
-            keys: ["5 HOSTILES", "THEN EXTRACTION"],
-          },
-        ]
-      : [
-          {
-            num: "01",
-            title: "MOVE",
-            text: "W A S D to move · SHIFT to sprint. Your squad follows you automatically.",
-            keys: ["W", "A", "S", "D", "SHIFT"],
-          },
-          {
-            num: "02",
-            title: "AIM & FIRE",
-            text: "Move mouse to aim · LEFT CLICK to fire · RIGHT CLICK to aim down sights. Click the view to capture the mouse.",
-            keys: ["MOUSE", "LMB FIRE", "RMB ADS", "R RELOAD"],
-          },
-          {
-            num: "03",
-            title: "OBJECTIVE",
-            text: "Eliminate 5 hostiles. Red markers show where they are. Then reach the extraction point.",
-            keys: ["5 HOSTILES", "THEN EXTRACTION"],
-          },
-        ];
-    const s = steps[tutStep];
-    overlay.innerHTML =
-      '<div class="nx-panel">' +
-      '<div class="nx-kicker">FIELD TRAINING // STEP ' +
-      s.num +
-      " OF 03</div>" +
-      '<div class="nx-stepnum">' +
-      s.num +
-      "</div>" +
-      '<div class="nx-stepttl">' +
-      s.title +
-      "</div>" +
-      '<div class="nx-rule"></div>' +
-      '<div class="nx-steptext">' +
-      s.text +
-      "</div>" +
-      '<div class="nx-keys">' +
-      s.keys.map((k) => `<span>${k}</span>`).join("") +
-      "</div>" +
-      '<div class="nx-dots">' +
-      steps.map((_, i) => `<i class="${i <= tutStep ? "on" : ""}"></i>`).join("") +
-      "</div>" +
-      "</div>";
-    if (tutStep === 2) {
-      if (document.pointerLockElement === canvas) document.exitPointerLock();
-      bindBegin("BEGIN OPERATION", beginOperation);
+    for (const p of puffs) {
+      if (p.life <= 0) continue;
+      p.life -= dt;
+      const k = 1 - p.life / p.max;
+      p.sp.scale.setScalar(p.grow * (0.3 + k * 0.9));
+      p.sp.position.y += dt * 0.25;
+      p.mat.opacity = Math.max(0, (1 - k) * 0.45);
+      if (p.life <= 0) p.sp.visible = false;
     }
+    for (const f of flashes) {
+      if (f.life <= 0) continue;
+      f.life -= dt;
+      f.mat.opacity = Math.max(0, f.life / f.max);
+      if (f.life <= 0) f.sp.visible = false;
+    }
+    muzzleLight.intensity = Math.max(0, muzzleLight.intensity - dt * 260);
   }
 
-  function beginOperation() {
-    if (stage !== "tutorial" && stage !== "briefing") return;
-    writeSeen();
-    overlay.style.display = "none";
-    stage = "playing";
-    startedCombat = true;
-    elapsed = 0;
-    kills = 0;
-    shots = 0;
-    hits = 0;
-    fireCd = 0;
-    if (player) {
-      player.hp = PLAYER_HP;
-      player.ammo = MAG;
-      player.reloadCd = 0;
-      player.alive = true;
-      if (player.marker) player.marker.visible = true;
-    }
-    for (const a of allies) {
-      a.hp = PLAYER_HP;
-      a.alive = true;
-      a.fireCd = 0.4 + rng() * 0.8;
-    }
-    for (const e of enemies) {
-      e.hp = PLAYER_HP;
-      e.alive = true;
-      e.fireCd = 0.7 + rng() * 1.1;
-      if (e.hpFill) e.hpFill.scale.x = 0.84;
-      if (e.hpGroup) e.hpGroup.visible = false;
-    }
-    updateHud();
-  }
+  // ------------------------------------------------------------- loading
+  hud.overlay.className = "nx-ov load on";
+  hud.overlay.innerHTML = `<div class="nx-load"><div class="nx-kick">TACTICAL NETWORK // DISTRICT 07</div>
+    <div class="nx-h2" style="margin-top:14px">ESTABLISHING LINK</div>
+    <div class="bar"><i></i></div><div class="st"><span>OPERATORS · DISTRICT · SKY</span><span class="pc">0%</span></div>
+    <div class="err"></div></div>`;
+  const loadFill = hud.overlay.querySelector(".bar i") as HTMLElement;
+  const loadPct = hud.overlay.querySelector(".pc") as HTMLElement;
 
-  let startedCombat = false;
-  showLoading();
-
-  // -------------------------------------------------------------- asset I/O
   const manager = new THREE.LoadingManager();
-  manager.onProgress = (_url, loaded, total) => {
-    const p = total > 0 ? loaded / total : 0;
-    const fill = overlay.querySelector("#nx-barfill") as HTMLElement | null;
-    const pct = overlay.querySelector("#nx-pct") as HTMLElement | null;
-    if (fill) fill.style.width = `${Math.round(p * 100)}%`;
-    if (pct) pct.textContent = `${Math.round(p * 100)}%`;
+  manager.onProgress = (_u, loaded, total) => {
+    const p = total ? Math.round((loaded / total) * 100) : 0;
+    loadFill.style.width = `${p}%`;
+    loadPct.textContent = `${p}%`;
   };
-  manager.onError = (url) => console.error(`[NEXUS] Asset request failed: ${url}`);
-
   const gltfLoader = new GLTFLoader(manager);
-  const hdrLoader = new RGBELoader(manager);
+  const hdrLoader = new HDRLoader(manager);
   let pmrem: THREE.PMREMGenerator | null = null;
-  let envTarget: THREE.WebGLCubeRenderTarget | null = null;
-  let hdrTexture: THREE.DataTexture | null = null;
+  let envRT: THREE.WebGLRenderTarget | null = null;
+  let hdrTex: THREE.DataTexture | null = null;
 
-  async function loadGltf(name: string, kind: "models" | "env") {
-    const url = `${ASSET}/${kind}/${name}.glb`;
+  let soldierSrc: THREE.Group | null = null;
+  let clips: THREE.AnimationClip[] = [];
+  let crateSrc: THREE.Group | null = null;
+  const rifleParts = createRifleParts();
+  for (const g of Object.values(rifleParts.geo)) geometries.add(g);
+  materials.add(rifleParts.metal);
+  materials.add(rifleParts.polymer);
+
+  async function loadGlb(name: string, kind: "models" | "env") {
     try {
-      const gltf = await gltfLoader.loadAsync(url);
-      sourceObjects.push(gltf.scene);
-      return gltf;
+      const g = await gltfLoader.loadAsync(`${ASSET}/${kind}/${name}.glb`);
+      sourceObjects.push(g.scene);
+      return g;
     } catch (err) {
-      console.error(`[NEXUS] Failed to load GLB: ${url}`, err);
+      console.error(`[NEXUS] GLB failed: ${name}`, err);
       return null;
     }
   }
 
   async function boot() {
-    const soldierP = loadGltf("soldier", "models").then((g) => {
-      const line = overlay.querySelector("#nx-l-op") as HTMLElement | null;
-      if (line) line.textContent = g ? "OK" : "FAULT";
-      return g;
-    });
-    const envP = Promise.all(GLB_ENV.map((n) => loadGltf(n, "env"))).then((r) => {
-      const line = overlay.querySelector("#nx-l-env") as HTMLElement | null;
-      if (line) line.textContent = r.every(Boolean) ? "OK" : "PARTIAL";
-      return r;
-    });
+    const solP = loadGlb("soldier", "models");
+    const envP = Promise.all(GLB_ENV.map((n) => loadGlb(n, "env")));
     const hdrP = hdrLoader
       .loadAsync(`${ASSET}/hdr/city_sunset.hdr`)
-      .then((tex: THREE.DataTexture) => {
-        hdrTexture = tex;
-        try {
-          pmrem = new THREE.PMREMGenerator(renderer);
-          pmrem.compileEquirectangularShader();
-          envTarget = pmrem.fromEquirectangular(tex);
-          scene.environment = envTarget.texture;
-          const line = overlay.querySelector("#nx-l-hdr") as HTMLElement | null;
-          if (line) line.textContent = "OK";
-        } catch (err) {
-          console.error("[NEXUS] Failed to build environment map", err);
-        }
+      .then((tex) => {
+        if (disposed) return;
+        hdrTex = tex as THREE.DataTexture;
+        hdrTex.mapping = THREE.EquirectangularReflectionMapping;
+        pmrem = new THREE.PMREMGenerator(renderer);
+        envRT = pmrem.fromEquirectangular(hdrTex);
+        scene.environment = envRT.texture;
+        scene.environmentIntensity = 0.45;
+        scene.background = hdrTex;
+        scene.backgroundBlurriness = 0.12;
+        scene.backgroundIntensity = 0.16;
+        scene.backgroundRotation.set(0, Math.PI * 0.62, 0);
+        scene.environmentRotation.set(0, Math.PI * 0.62, 0);
       })
-      .catch((err: unknown) => {
-        console.error(`[NEXUS] Failed to load HDR: ${ASSET}/hdr/city_sunset.hdr`, err);
-      });
-
-    const [soldier, envResults] = await Promise.all([soldierP, envP, hdrP]);
+      .catch((err) => console.error("[NEXUS] HDR failed", err));
+    const [sol, env] = await Promise.all([solP, envP, hdrP]);
     if (disposed) return;
-    const fill = overlay.querySelector("#nx-barfill") as HTMLElement | null;
-    const pct = overlay.querySelector("#nx-pct") as HTMLElement | null;
-    if (fill) fill.style.width = "100%";
-    if (pct) pct.textContent = "100%";
-    if (!soldier) {
-      const err = overlay.querySelector("#nx-error") as HTMLElement | null;
-      if (err) err.textContent = "CRITICAL ASSET FAULT — SEE CONSOLE";
+    if (!sol) {
+      (hud.overlay.querySelector(".err") as HTMLElement).textContent = "CRITICAL ASSET FAULT — SEE CONSOLE";
+      return;
     }
-    buildWorld(soldier?.scene ?? null, envResults.map((g) => g?.scene ?? null));
-    // overlay, briefing/tutorial için görünür kalmalı — beginOperation gizler
-    if (readSeen()) {
-      stage = "briefing";
-      showBriefing();
-    } else {
-      stage = "tutorial";
-      tutStep = 0;
-      tutMoved = 0;
-      showTutorial();
-    }
-    updateHud();
+    soldierSrc = sol.scene;
+    clips = sol.animations;
+    buildWorld(env.map((g) => g?.scene ?? null));
+    resetMission();
+    renderer.compile(scene, camera);
+    showMenu();
   }
 
-  // ------------------------------------------------------------ world build
-  function cloneUnitMaterials(obj: THREE.Object3D): THREE.Material[] {
-    const out: THREE.Material[] = [];
-    obj.traverse((o) => {
-      const mesh = o as THREE.Mesh;
-      if (!mesh.isMesh || !mesh.material) return;
-      const cloneOne = (m: THREE.Material) => {
-        const c = m.clone();
-        materials.add(c);
-        out.push(c);
-        return c;
-      };
-      mesh.material = Array.isArray(mesh.material)
-        ? mesh.material.map(cloneOne)
-        : cloneOne(mesh.material);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
+  // ---------------------------------------------------------- world build
+  const blockerGeo = G(new THREE.BoxGeometry(1, 1, 1));
+  const blockerMat = M(new THREE.MeshBasicMaterial({ visible: false }));
+  function addBlocker(box: THREE.Box3) {
+    const b = box.clone();
+    b.min.y = 0;
+    solidBoxes.push(b);
+    const m = new THREE.Mesh(blockerGeo, blockerMat);
+    b.getCenter(m.position);
+    b.getSize(m.scale);
+    m.updateMatrixWorld(true);
+    scene.add(m);
+    blockers.push(m);
+    return b;
+  }
+
+  function placeEnv(src: THREE.Group, pos: THREE.Vector3, scale: number, rotY: number, solid: boolean) {
+    const box0 = new THREE.Box3().setFromObject(src);
+    const c = box0.getCenter(new THREE.Vector3());
+    const wrap = new THREE.Group();
+    const inst = src.clone(true);
+    inst.scale.setScalar(scale);
+    inst.position.set(-c.x * scale, -box0.min.y * scale, -c.z * scale);
+    inst.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) {
+        m.castShadow = true;
+        m.receiveShadow = true;
+      }
     });
-    return out;
+    wrap.add(inst);
+    wrap.position.copy(pos);
+    wrap.rotation.y = rotY;
+    scene.add(wrap);
+    wrap.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(wrap);
+    if (solid) addBlocker(box);
+    return box;
   }
 
-  function tintUnit(mats: THREE.Material[], team: Team) {
-    const tint =
-      team === "hostile"
-        ? new THREE.Color(0x592126)
-        : team === "ally"
-          ? new THREE.Color(0x8da38d)
-          : new THREE.Color(0x63d2d8);
-    const glow =
-      team === "hostile"
-        ? new THREE.Color(0x5a0a0d)
-        : team === "ally"
-          ? new THREE.Color(0x0b3330)
-          : new THREE.Color(0x0e4b52);
-    const strength = team === "hostile" ? 0.82 : team === "ally" ? 0.55 : 0.5;
-    for (const m of mats) {
-      const sm = m as THREE.MeshStandardMaterial;
-      if (sm.color) sm.color.lerp(tint, strength);
-      if (sm.emissive) {
-        sm.emissive.copy(glow);
-        sm.emissiveIntensity = team === "hostile" ? 0.45 : 0.22;
+  function glowNeon(root: THREE.Object3D) {
+    const hsl = { h: 0, s: 0, l: 0 };
+    root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) {
+        const sm = m as THREE.MeshStandardMaterial;
+        if (!sm.color || !sm.emissive || sm.userData.nxGlow) continue;
+        sm.userData.nxGlow = true;
+        sm.color.getHSL(hsl);
+        const neonHue = hsl.h > 0.72 || hsl.h < 0.02 || (hsl.h > 0.42 && hsl.h < 0.58) || (hsl.h > 0.12 && hsl.h < 0.2);
+        if (hsl.s > 0.6 && hsl.l > 0.42 && neonHue) {
+          sm.emissive.copy(sm.color);
+          sm.emissiveIntensity = 0.85;
+        }
       }
-      if (typeof sm.roughness === "number") sm.roughness = team === "player" ? 0.58 : 0.74;
-      if (typeof sm.metalness === "number") sm.metalness = 0.15;
-      sm.needsUpdate = true;
+    });
+  }
+
+  function buildWorld(env: Array<THREE.Group | null>) {
+    const at = (i: number) => env[i] ?? null;
+    for (const i of [0, 1, 2, 3, 6]) {
+      const s = at(i);
+      if (s) glowNeon(s);
     }
-  }
+    crateSrc = at(7);
 
-  function makeActor(model: THREE.Object3D, source: THREE.Group): Actor {
-    const mixer = new THREE.AnimationMixer(model);
-    const actions: Record<string, THREE.AnimationAction> = {};
-    for (const clip of source.animations) actions[clip.name] = mixer.clipAction(clip);
-    return { mixer, actions, current: "" };
-  }
-
-  function playClip(actor: Actor, name: string) {
-    if (actor.current === name) return;
-    const next = actor.actions[name];
-    if (!next) return;
-    const prev = actor.actions[actor.current];
-    next.reset();
-    next.setLoop(THREE.LoopRepeat, Infinity);
-    next.enabled = true;
-    next.fadeIn(0.22).play();
-    if (prev) prev.fadeOut(0.22);
-    actor.current = name;
-  }
-
-  function buildWorld(soldierSource: THREE.Group | null, envResults: Array<THREE.Group | null>) {
-    const boundsCache = new Map<THREE.Object3D, THREE.Box3>();
-    const envAt = (i: number) => envResults[i] ?? null;
-
-    function placeEnv(
-      source: THREE.Group,
-      pos: THREE.Vector3,
-      scale: number,
-      yawAngle: number,
-      solid: boolean,
-      blocksSight: boolean,
-    ) {
-      let box = boundsCache.get(source);
-      if (!box) {
-        box = new THREE.Box3().setFromObject(source);
-        boundsCache.set(source, box);
-      }
-      const center = box.getCenter(new THREE.Vector3());
-      const wrapper = new THREE.Group();
-      const instance = source.clone(true);
-      instance.scale.setScalar(scale);
-      instance.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale);
-      wrapper.add(instance);
-      wrapper.position.copy(pos);
-      wrapper.rotation.y = yawAngle;
-      scene.add(wrapper);
-      wrapper.updateMatrixWorld(true);
-      const worldBox = new THREE.Box3().setFromObject(wrapper);
-      if (solid) {
-        worldBox.min.y = 0;
-        solidBoxes.push(worldBox);
-      }
-      if (blocksSight) {
-        wrapper.traverse((o) => {
-          if ((o as THREE.Mesh).isMesh) coverMeshes.push(o);
-        });
-      }
-      return { wrapper, worldBox };
-    }
-
-    // Two rows of facades forming a real street corridor.
-    const roofSpots: Array<{ x: number; z: number; y: number }> = [];
-    const zRow = [-29, -21, -13, -5, 3, 11, 19, 27];
+    // Facade corridor.
+    const zRow = [-30, -22, -14, -6, 2, 10, 18, 26, 33];
     for (const side of [-1, 1]) {
       for (let i = 0; i < zRow.length; i++) {
-        if (side === 1 && i === 3) continue; // side alley
-        const src = envAt((i + (side < 0 ? 0 : 2)) % 4);
+        if (side === 1 && i === 3) continue; // side alley (reinforcement entry)
+        const src = at((i + (side < 0 ? 0 : 2)) % 4);
         if (!src) continue;
-        const x = side * (9.6 + rng() * 0.9);
-        const z = zRow[i] + (rng() - 0.5) * 1.4;
-        const scale = 1.8 + rng() * 0.8;
-        const yawFace = side < 0 ? Math.PI / 2 : -Math.PI / 2;
-        const placed = placeEnv(src, new THREE.Vector3(x, 0, z), scale, yawFace, true, true);
-        if (i % 2 === 0) roofSpots.push({ x, z, y: placed.worldBox.max.y });
+        const x = side * (10.4 + rng() * 0.8);
+        const z = zRow[i] + (rng() - 0.5) * 1.2;
+        placeEnv(src, new THREE.Vector3(x, 0, z), 1.9 + rng() * 0.7, side < 0 ? Math.PI / 2 : -Math.PI / 2, true);
       }
     }
+    // End caps close the street so the corridor never opens into the void.
+    for (const [z, rot] of [
+      [-40, 0],
+      [40, Math.PI],
+    ] as Array<[number, number]>) {
+      for (const x of [-7, 0, 7]) {
+        const src = at((Math.abs(x) + (z > 0 ? 1 : 0)) % 4);
+        if (src) placeEnv(src, new THREE.Vector3(x, 0, z), 2.6, rot, true);
+      }
+    }
+    const alleyWall = at(1);
+    if (alleyWall) placeEnv(alleyWall, new THREE.Vector3(15.5, 0, -6), 2.4, -Math.PI / 2, true);
 
-    // Streetlights on both sidewalks.
-    const lampSpots: Array<{ pos: THREE.Vector3; warm: boolean }> = [];
+    // Streetlights + light cones.
+    const coneGeo = G(new THREE.ConeGeometry(1.7, 3.6, 24, 1, true));
+    coneGeo.translate(0, -1.8, 0);
+    const lampSpots: Array<{ x: number; z: number; warm: boolean }> = [];
     for (const side of [-1, 1]) {
       for (let i = 0; i < 7; i++) {
-        const src = envAt(i % 2 === 0 ? 4 : 5);
+        const src = at(i % 2 === 0 ? 4 : 5);
         if (!src) continue;
-        const pos = new THREE.Vector3(side * 6.95, 0, -28 + i * 9.2);
-        placeEnv(src, pos, 1.25, side < 0 ? 0 : Math.PI, false, false);
-        lampSpots.push({ pos, warm: i % 3 === 0 });
+        const x = side * (ROAD_HALF + 0.7);
+        const z = -27 + i * 9;
+        placeEnv(src, new THREE.Vector3(x, 0.12, z), 1.3, side < 0 ? 0 : Math.PI, false);
+        lampSpots.push({ x, z, warm: (i + (side > 0 ? 1 : 0)) % 2 === 0 });
       }
     }
-    for (let i = 0; i < lampSpots.length; i += 3) {
-      const l = lampSpots[i];
-      const light = new THREE.PointLight(l.warm ? 0xffbd78 : 0x8edbe6, l.warm ? 14 : 11, 16, 2);
-      light.position.copy(l.pos).add(new THREE.Vector3(0, 3.1, 0));
-      scene.add(light);
-    }
-
-    // Signs mounted on the facades, antennas on the roofs.
-    const signSrc = envAt(6);
-    for (const side of [-1, 1]) {
-      for (const z of [-17, 1, 17]) {
-        if (!signSrc) continue;
-        placeEnv(
-          signSrc,
-          new THREE.Vector3(side * 8.05, 2.5 + rng() * 0.8, z),
-          0.95 + rng() * 0.35,
-          side < 0 ? Math.PI / 2 : -Math.PI / 2,
-          false,
-          false,
-        );
+    lampSpots.forEach((l, i) => {
+      const color = l.warm ? 0xffb66e : 0x7fd8ff;
+      const head = new THREE.Vector3(l.x * 0.92, 3.55, l.z);
+      if (i % 2 === 0) {
+        const light = new THREE.PointLight(color, l.warm ? 18 : 14, 14, 1.8);
+        light.position.copy(head);
+        scene.add(light);
       }
-    }
-    const antennaSrc = envAt(11);
-    for (const spot of roofSpots.slice(0, 6)) {
-      if (!antennaSrc) continue;
-      placeEnv(
-        antennaSrc,
-        new THREE.Vector3(spot.x, spot.y + 0.05, spot.z),
-        0.85 + rng() * 0.3,
-        rng() * Math.PI * 2,
-        false,
-        false,
-      );
-    }
-    const towerSrc = envAt(8);
-    if (towerSrc) placeEnv(towerSrc, new THREE.Vector3(0, 0, -33), 2.1, 0, false, false);
-
-    // Cover: crates, barriers, turrets and AC units in the street.
-    const coverSpots: Array<[number, number, number, number]> = [
-      [3.1, 16, 7, 2.4],
-      [-3.3, 11, 9, 0.85],
-      [2.7, 3, 7, 2.2],
-      [-3.0, -3, 9, 0.8],
-      [3.4, -11, 12, 1.7],
-      [-3.2, -16, 7, 2.3],
-      [2.0, -23, 13, 1.4],
-      [-2.0, 22, 9, 0.8],
-    ];
-    for (const [x, z, idx, scale] of coverSpots) {
-      const src = envAt(idx);
-      if (!src) continue;
-      placeEnv(src, new THREE.Vector3(x, 0, z), scale, (rng() - 0.5) * 0.5, true, true);
-    }
-    const railSrc = envAt(10);
-    if (railSrc) {
-      placeEnv(railSrc, new THREE.Vector3(-5.4, 0, -6), 1.2, Math.PI / 2, true, true);
-      placeEnv(railSrc, new THREE.Vector3(5.4, 0, 8), 1.2, Math.PI / 2, true, true);
-    }
-
-    function freeAt(x: number, z: number, pad: number) {
-      if (Math.abs(x) > STREET_HALF || Math.abs(z) > WORLD_HALF - 3) return false;
-      if (Math.hypot(x - SPAWN.x, z - SPAWN.z) < 5) return false;
-      if (Math.hypot(x - EXTRACTION.x, z - EXTRACTION.z) < 4.5) return false;
-      for (const b of solidBoxes) {
-        if (
-          x > b.min.x - pad &&
-          x < b.max.x + pad &&
-          z > b.min.z - pad &&
-          z < b.max.z + pad
-        )
-          return false;
-      }
-      return true;
-    }
-
-    const visorGeo = ownGeo(new THREE.BoxGeometry(0.28, 0.055, 0.035));
-    const ringGeo = ownGeo(new THREE.RingGeometry(0.5, 0.61, 32));
-    const hpTex = ownTex(whiteTexture());
-
-    function makeSoldier(team: Team, id: number, at: THREE.Vector3): Soldier | null {
-      if (!soldierSource) return null;
-      const root = new THREE.Group();
-      root.position.copy(at);
-      scene.add(root);
-      const model = cloneSkeleton(soldierSource);
-      root.add(model);
-      const mats = cloneUnitMaterials(model);
-      tintUnit(mats, team);
-      const actor = makeActor(model, soldierSource);
-      playClip(actor, "Idle");
-
-      const accent =
-        team === "hostile" ? 0xff5746 : team === "ally" ? 0x62c9bd : 0x8ff3ec;
-      const visor = new THREE.Mesh(
-        visorGeo,
-        ownMat(new THREE.MeshBasicMaterial({ color: accent })),
-      );
-      visor.position.set(0, 1.63, 0.18);
-      model.add(visor);
-
-      const ring = new THREE.Mesh(
-        ringGeo,
-        ownMat(
+      const cone = new THREE.Mesh(
+        coneGeo,
+        M(
           new THREE.MeshBasicMaterial({
-            color: team === "hostile" ? 0xd9433b : team === "player" ? 0x8ff3ec : 0x4fb3aa,
+            color,
+            alphaMap: fadeTex,
             transparent: true,
-            opacity: team === "player" ? 0.82 : 0.55,
-            side: THREE.DoubleSide,
+            opacity: 0.07,
+            blending: THREE.AdditiveBlending,
             depthWrite: false,
+            side: THREE.DoubleSide,
           }),
         ),
       );
-      ring.rotation.x = -Math.PI / 2;
-      ring.position.y = 0.03;
-      root.add(ring);
-
-      let marker: THREE.Sprite | undefined;
-      let hpGroup: THREE.Group | undefined;
-      let hpFill: THREE.Sprite | undefined;
-      if (team === "player") {
-        const tex = ownTex(labelTexture("YOU", "#9af6ee"));
-        marker = new THREE.Sprite(
-          ownMat(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false })),
-        );
-        marker.position.set(0, 2.24, 0);
-        marker.scale.set(0.82, 0.31, 1);
-        root.add(marker);
-      }
-      if (team === "hostile") {
-        hpGroup = new THREE.Group();
-        hpGroup.position.set(0, 2.08, 0);
-        hpGroup.visible = false;
-        const bg = new THREE.Sprite(
-          ownMat(new THREE.SpriteMaterial({ map: hpTex, color: 0x2a1012, depthWrite: false })),
-        );
-        bg.scale.set(0.94, 0.13, 1);
-        hpGroup.add(bg);
-        hpFill = new THREE.Sprite(
-          ownMat(new THREE.SpriteMaterial({ map: hpTex, color: 0xff5c4c, depthWrite: false })),
-        );
-        hpFill.scale.set(0.84, 0.075, 1);
-        hpFill.position.z = 0.01;
-        hpGroup.add(hpFill);
-        root.add(hpGroup);
-      }
-
-      const unit: Soldier = {
-        id,
-        team,
-        root,
-        model,
-        actor,
-        ring,
-        marker,
-        hpGroup,
-        hpFill,
-        hp: PLAYER_HP,
-        fireCd: 0,
-        reloadCd: 0,
-        ammo: team === "player" ? MAG : 12,
-        alive: true,
-        speed: 0,
-        avoidSign: id % 2 === 0 ? 1 : -1,
-        avoidTime: 0,
-        patrol: [],
-        patrolIndex: 0,
-        waitTime: 0,
-        deathTimer: 0,
-        materials: mats,
-      };
-      if (team === "hostile") {
-        model.traverse((o) => {
-          if ((o as THREE.Mesh).isMesh) enemyByMesh.set(o, unit);
-        });
-      }
-      soldiers.push(unit);
-      return unit;
-    }
-
-    // Player + allies.
-    player = makeSoldier("player", 0, SPAWN.clone());
-    const allyOffsets: Array<[number, number]> = [
-      [-1.5, -1.2],
-      [1.5, -1.2],
-      [0, -2.4],
-    ];
-    for (let i = 0; i < ALLY_COUNT; i++) {
-      const a = makeSoldier(
-        "ally",
-        i + 1,
-        new THREE.Vector3(SPAWN.x + allyOffsets[i][0], 0, SPAWN.z + allyOffsets[i][1]),
+      cone.position.copy(head);
+      scene.add(cone);
+      const glow = new THREE.Sprite(
+        M(new THREE.SpriteMaterial({ map: dotTex, color, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false })),
       );
-      if (a) allies.push(a);
-    }
+      glow.position.copy(head);
+      glow.scale.setScalar(0.9);
+      scene.add(glow);
+    });
 
-    // Hostiles spread down the corridor so the player must advance.
-    const hostileSpots: Array<[number, number]> = [
-      [-3.4, 7],
-      [3.5, -2],
-      [-2.9, -12],
-      [3.2, -20],
-      [0, -25],
+    const signSrc = at(6);
+    if (signSrc) {
+      for (const side of [-1, 1]) {
+        for (const z of [-18, 0, 15]) {
+          placeEnv(signSrc, new THREE.Vector3(side * 8.7, 3 + rng() * 0.8, z), 0.95 + rng() * 0.3, side < 0 ? Math.PI / 2 : -Math.PI / 2, false);
+        }
+      }
+    }
+    const tower = at(8);
+    if (tower) placeEnv(tower, new THREE.Vector3(0, 0, -36.5), 2.3, 0, false);
+
+    // Street cover.
+    const cover: Array<[number, number, number, number, number]> = [
+      [3.0, 16, 7, 2.3, 0.1],
+      [-3.3, 12.5, 13, 1.25, 0],
+      [-0.6, 7, 10, 0.55, Math.PI / 2],
+      [2.7, 2.5, 7, 2.2, -0.15],
+      [-3.0, -2, 9, 0.8, 0],
+      [0.4, -6.5, 13, 1.3, 0.3],
+      [3.4, -10, 12, 1.6, 0],
+      [-3.2, -14.5, 7, 2.3, 0.2],
+      [1.2, -18.5, 13, 1.3, 0],
+      [-2.4, -21.5, 12, 1.5, 0.4],
+      [3.6, -27.5, 7, 2.1, 0],
+      [-2.0, 22, 9, 0.8, 0],
+      [-4.8, 5.5, 7, 2.0, 0.6],
+      [4.9, -16.5, 13, 1.2, 0],
     ];
-    for (let i = 0; i < HOSTILE_COUNT; i++) {
-      let [x, z] = hostileSpots[i];
-      if (!freeAt(x, z, 1.0)) {
-        x += (rng() - 0.5) * 2.5;
-        z += (rng() - 0.5) * 2.5;
+    const streetBoxes: THREE.Box3[] = [];
+    for (const [x, z, idx, s, r] of cover) {
+      const src = at(idx);
+      if (!src) continue;
+      const box = placeEnv(src, new THREE.Vector3(x, 0, z), s, r, false);
+      streetBoxes.push(addBlocker(box));
+    }
+    const railSrc = at(10);
+    if (railSrc) {
+      for (const [x, z] of [
+        [-5.6, -6],
+        [5.6, 8],
+        [-5.6, 19],
+      ]) {
+        addBlocker(placeEnv(railSrc, new THREE.Vector3(x, 0, z), 1.25, Math.PI / 2, false));
       }
-      const e = makeSoldier("hostile", i + 1, new THREE.Vector3(x, 0, z));
-      if (!e) continue;
-      const patrol: THREE.Vector3[] = [];
-      for (let k = 0; k < 4; k++) {
-        patrol.push(
-          new THREE.Vector3(
-            THREE.MathUtils.clamp(x + (rng() - 0.5) * 6, -STREET_HALF + 1, STREET_HALF - 1),
-            0,
-            THREE.MathUtils.clamp(z + (rng() - 0.5) * 8, -30, 30),
-          ),
-        );
-      }
-      e.patrol = patrol;
-      e.fireCd = 0.8 + rng() * 1.2;
-      enemies.push(e);
     }
 
-    // Shared marker above the closest living hostile.
-    const markerCanvas = document.createElement("canvas");
-    markerCanvas.width = 256;
-    markerCanvas.height = 96;
-    const markerCtx = markerCanvas.getContext("2d");
-    const markerTex = ownTex(new THREE.CanvasTexture(markerCanvas));
-    markerTex.colorSpace = THREE.SRGBColorSpace;
-    const nearestMarker = new THREE.Sprite(
-      ownMat(new THREE.SpriteMaterial({ map: markerTex, transparent: true, depthWrite: false })),
-    );
-    nearestMarker.scale.set(0.9, 0.34, 1);
-    nearestMarker.visible = false;
-    scene.add(nearestMarker);
-    const drawNearest = (dist: number) => {
-      if (!markerCtx) return;
-      const ctx = markerCtx;
-      ctx.clearRect(0, 0, 256, 96);
-      ctx.fillStyle = "#ff6b58";
-      ctx.beginPath();
-      ctx.moveTo(128, 4);
-      ctx.lineTo(158, 38);
-      ctx.lineTo(138, 38);
-      ctx.lineTo(138, 62);
-      ctx.lineTo(118, 62);
-      ctx.lineTo(118, 38);
-      ctx.lineTo(98, 38);
-      ctx.closePath();
-      ctx.fill();
-      ctx.font = "bold 26px ui-monospace, monospace";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.lineWidth = 5;
-      ctx.strokeStyle = "rgba(8,4,4,.85)";
-      ctx.strokeText(`${Math.round(dist)}M`, 128, 79);
-      ctx.fillStyle = "#ffd3ca";
-      ctx.fillText(`${Math.round(dist)}M`, 128, 79);
-      markerTex.needsUpdate = true;
-    };
-    markerUpdater = drawNearest;
-    nearestSprite = nearestMarker;
-    updateHud();
+    // Cover points around street boxes.
+    const normals = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1)];
+    for (const b of streetBoxes) {
+      const c = b.getCenter(new THREE.Vector3());
+      const half = b.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+      for (const n of normals) {
+        const p = new THREE.Vector3(c.x + n.x * (half.x + 0.55), 0, c.z + n.z * (half.z + 0.55));
+        if (Math.abs(p.x) > ROAD_HALF + 1.5 || blockedAt(p.x, p.z, 0.35)) continue;
+        coverPoints.push({ pos: p, normal: n.clone(), taken: null });
+      }
+    }
   }
 
-  let markerUpdater: ((dist: number) => void) | null = null;
-  let nearestSprite: THREE.Sprite | null = null;
-
-  // ---------------------------------------------------------- navigation
-  function hasLineOfSight(from: THREE.Vector3, to: THREE.Vector3) {
-    if (coverMeshes.length === 0) return true;
-    const origin = new THREE.Vector3(from.x, 1.25, from.z);
-    const dest = new THREE.Vector3(to.x, 1.15, to.z);
-    const delta = new THREE.Vector3().subVectors(dest, origin);
-    const dist = delta.length();
-    if (dist < 0.001) return true;
-    const ray = new THREE.Raycaster(origin, delta.normalize(), 0, Math.max(0.01, dist - 0.4));
-    return ray.intersectObjects(coverMeshes, false).length === 0;
-  }
-
-  function blockedAt(x: number, z: number, radius: number) {
+  // ----------------------------------------------------------- navigation
+  function blockedAt(x: number, z: number, r: number) {
+    if (Math.abs(z) > WORLD_HALF - 0.6) return true;
+    const alley = z > -8.2 && z < -2.4 && x > 0;
+    if (Math.abs(x) > (alley ? 14.5 : 9.3)) return true;
     for (const b of solidBoxes) {
-      if (
-        x > b.min.x - radius &&
-        x < b.max.x + radius &&
-        z > b.min.z - radius &&
-        z < b.max.z + radius
-      )
-        return true;
+      if (x > b.min.x - r && x < b.max.x + r && z > b.min.z - r && z < b.max.z + r) return true;
     }
-    return Math.abs(x) > WORLD_HALF - 1.2 || Math.abs(z) > WORLD_HALF - 1.2;
-  }
-
-  function steer(
-    pos: THREE.Vector3,
-    dir: THREE.Vector3,
-    agent: Soldier,
-    dt: number,
-  ): THREE.Vector3 {
-    let sign = agent.avoidSign;
-    let time = agent.avoidTime;
-    if (time <= 0) {
-      const ray = new THREE.Raycaster(new THREE.Vector3(pos.x, 0.9, pos.z), dir, 0, 1.6);
-      if (ray.intersectObjects(coverMeshes, false).length > 0) {
-        sign = -sign;
-        time = 0.6;
-      }
-    } else {
-      time -= dt;
-    }
-    agent.avoidSign = sign;
-    agent.avoidTime = time;
-    if (time > 0) return new THREE.Vector3(-dir.z * sign, 0, dir.x * sign).normalize();
-    return dir;
-  }
-
-  function moveAgent(agent: Soldier, target: THREE.Vector3, speed: number, dt: number, arrive: number) {
-    const delta = new THREE.Vector3().subVectors(target, agent.root.position);
-    delta.y = 0;
-    const dist = delta.length();
-    if (dist < arrive) {
-      agent.speed = 0;
-      return true;
-    }
-    const dir = delta.normalize();
-    const steered = steer(agent.root.position, dir, agent, dt);
-    const step = Math.min(speed * dt, dist);
-    const nx = agent.root.position.x + steered.x * step;
-    const nz = agent.root.position.z + steered.z * step;
-    if (!blockedAt(nx, agent.root.position.z, 0.42)) agent.root.position.x = nx;
-    if (!blockedAt(agent.root.position.x, nz, 0.42)) agent.root.position.z = nz;
-    agent.speed = speed;
-    const face = Math.atan2(steered.x, steered.z);
-    let diff = face - agent.root.rotation.y;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    agent.root.rotation.y += diff * Math.min(1, dt * 9);
     return false;
   }
 
-  function faceTarget(agent: Soldier, target: THREE.Vector3, dt: number) {
-    const face = Math.atan2(target.x - agent.root.position.x, target.z - agent.root.position.z);
-    let diff = face - agent.root.rotation.y;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    agent.root.rotation.y += diff * Math.min(1, dt * 9);
+  function groundY(x: number) {
+    return Math.abs(x) > ROAD_HALF + 0.1 ? 0.12 : 0;
   }
 
-  function muzzleOf(agent: Soldier) {
-    const y = agent.root.rotation.y;
-    return new THREE.Vector3(
-      agent.root.position.x + Math.sin(y) * 0.42 + Math.cos(y) * 0.16,
-      1.34,
-      agent.root.position.z + Math.cos(y) * 0.42 - Math.sin(y) * 0.16,
+  const losA = new THREE.Vector3();
+  const losB = new THREE.Vector3();
+  function los(from: THREE.Vector3, fromH: number, to: THREE.Vector3, toH: number) {
+    losA.set(from.x, from.y + fromH, from.z);
+    losB.set(to.x, to.y + toH, to.z).sub(losA);
+    const d = losB.length();
+    if (d < 0.01) return true;
+    losRay.set(losA, losB.divideScalar(d));
+    losRay.far = d - 0.25;
+    return losRay.intersectObjects(blockers, false).length === 0;
+  }
+
+  function moveBy(s: Soldier, dx: number, dz: number) {
+    const p = s.root.position;
+    if (!blockedAt(p.x + dx, p.z, 0.36)) p.x += dx;
+    if (!blockedAt(p.x, p.z + dz, 0.36)) p.z += dz;
+  }
+
+  const steerV = new THREE.Vector3();
+  function moveToward(s: Soldier, target: THREE.Vector3, speed: number, dt: number, arrive: number) {
+    steerV.subVectors(target, s.root.position);
+    steerV.y = 0;
+    const d = steerV.length();
+    if (d < arrive) {
+      s.speed = 0;
+      return true;
+    }
+    steerV.divideScalar(d);
+    if (s.avoidTime > 0) {
+      s.avoidTime -= dt;
+      steerV.set(-steerV.z * s.avoidSign, 0, steerV.x * s.avoidSign);
+    } else if (blockedAt(s.root.position.x + steerV.x * 0.9, s.root.position.z + steerV.z * 0.9, 0.4)) {
+      const lx = s.root.position.x - steerV.z * 0.9;
+      const lz = s.root.position.z + steerV.x * 0.9;
+      s.avoidSign = blockedAt(lx, lz, 0.4) ? -1 : 1;
+      s.avoidTime = 0.55;
+    }
+    const step = Math.min(speed * dt, d);
+    const bx = s.root.position.x;
+    const bz = s.root.position.z;
+    moveBy(s, steerV.x * step, steerV.z * step);
+    const moved = Math.hypot(s.root.position.x - bx, s.root.position.z - bz);
+    if (moved < step * 0.3) {
+      s.avoidSign = -s.avoidSign;
+      s.avoidTime = 0.5;
+    }
+    s.speed = dt > 0 ? moved / dt : 0;
+    s.faceYaw = Math.atan2(steerV.x, steerV.z);
+    return false;
+  }
+
+  // ------------------------------------------------------------ soldiers
+  const hitGeo = {
+    head: G(new THREE.SphereGeometry(0.15, 8, 6)),
+    torso: G(new THREE.BoxGeometry(0.5, 0.62, 0.34)),
+    legs: G(new THREE.BoxGeometry(0.42, 0.86, 0.3)),
+  };
+  const laserGeo = G(new THREE.CylinderGeometry(0.006, 0.006, 1, 4, 1, true));
+  laserGeo.rotateX(Math.PI / 2);
+  laserGeo.translate(0, 0, 0.5);
+  const hostileTex = T(diamond("#ff4d5c"));
+
+  function findBone(model: THREE.Object3D, name: string) {
+    return model.getObjectByName(`mixamorig${name}`) ?? model.getObjectByName(`mixamorig:${name}`) ?? null;
+  }
+
+  function spawnSoldier(team: Team, at: THREE.Vector3, name = ""): Soldier | null {
+    if (!soldierSrc) return null;
+    const owned = { mats: [] as THREE.Material[], tex: [] as THREE.Texture[] };
+    const root = new THREE.Group();
+    root.position.copy(at);
+    const body = new THREE.Group();
+    root.add(body);
+    const model = cloneSkeleton(soldierSrc);
+    model.rotation.y = Math.PI; // asset faces -Z; root forward is +Z
+    body.add(model);
+    scene.add(root);
+
+    const tint = team === "hostile" ? new THREE.Color(0x2b2f36) : team === "ally" ? new THREE.Color(0x67705f) : new THREE.Color(0xd8dde0);
+    const visor = team === "hostile" ? 0xff2a3c : team === "ally" ? 0x7dffb0 : load.visor;
+    model.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = false;
+      const src = mesh.material as THREE.MeshStandardMaterial;
+      const m = src.clone();
+      owned.mats.push(m);
+      const isVisor = /visor/i.test(mesh.name) || /visor/i.test(src.name);
+      if (isVisor) {
+        m.color.setHex(0x0a0d10);
+        m.emissive = new THREE.Color(visor);
+        m.emissiveIntensity = team === "hostile" ? 2.2 : 0.9;
+        m.roughness = 0.2;
+        m.metalness = 0.6;
+      } else {
+        m.color.lerp(tint, team === "player" ? 0.15 : team === "ally" ? 0.55 : 0.78);
+        m.roughness = 0.62;
+        m.metalness = team === "hostile" ? 0.35 : 0.2;
+        m.envMapIntensity = 0.9;
+      }
+      mesh.material = m;
+    });
+
+    const mixer = new THREE.AnimationMixer(model);
+    const actions: Record<string, THREE.AnimationAction> = {};
+    for (const clip of clips) actions[clip.name] = mixer.clipAction(clip);
+    const actor: Actor = { mixer, actions, current: "" };
+
+    const found = ["Spine1", "Neck", "RightArm", "RightForeArm", "RightHand", "LeftArm", "LeftForeArm", "LeftHand"].map((n) =>
+      findBone(model, n),
     );
+    const bones: Bones | null = found.every(Boolean)
+      ? {
+          spine: found[0]!,
+          neck: found[1]!,
+          rArm: found[2]!,
+          rFore: found[3]!,
+          rHand: found[4]!,
+          lArm: found[5]!,
+          lFore: found[6]!,
+          lHand: found[7]!,
+        }
+      : null;
+
+    const pivot = new THREE.Group();
+    pivot.position.set(-0.13, 1.4, 0.05);
+    body.add(pivot);
+    const rifle = buildRifle(
+      rifleParts,
+      visor,
+      team === "player" ? { optic: equipped("optic"), muzzle: equipped("muzzle"), mag: equipped("mag") } : {},
+    );
+    owned.mats.push(rifle.accent);
+    rifle.group.position.set(0, 0, 0.2);
+    pivot.add(rifle.group);
+
+    const hitboxes: THREE.Mesh[] = [];
+    const mk = (geo: THREE.BufferGeometry, y: number, part: string) => {
+      const h = new THREE.Mesh(geo, blockerMat);
+      h.position.set(0, y, 0.02);
+      h.userData.part = part;
+      body.add(h);
+      hitboxes.push(h);
+    };
+    mk(hitGeo.head, 1.66, "head");
+    mk(hitGeo.torso, 1.2, "torso");
+    mk(hitGeo.legs, 0.45, "legs");
+
+    const s: Soldier = {
+      id: nextId++,
+      team,
+      name,
+      root,
+      body,
+      model,
+      actor,
+      bones,
+      pivot,
+      rifle,
+      hitboxes,
+      owned,
+      hp: team === "hostile" ? 100 : PLAYER_HP,
+      maxHp: team === "hostile" ? 100 : PLAYER_HP,
+      alive: true,
+      down: false,
+      vel: new THREE.Vector3(),
+      speed: 0,
+      faceYaw: 0,
+      aimPoint: new THREE.Vector3(at.x, 1.3, at.z - 10),
+      aimW: 0,
+      aiming: false,
+      flinch: 0,
+      fall: 0,
+      fallRoll: 0,
+      deadTime: 0,
+      state: "patrol",
+      awareness: 0,
+      reaction: 0,
+      target: null,
+      los: false,
+      losTimer: fx() * 0.2,
+      cover: null,
+      coverTimer: 0,
+      noLosTime: 0,
+      peek: null,
+      aimTimer: 0,
+      burst: 0,
+      burstCd: 0.6 + fx(),
+      shotCd: 0,
+      patrol: [],
+      patrolIndex: 0,
+      waitTime: fx() * 2,
+      avoidSign: fx() < 0.5 ? 1 : -1,
+      avoidTime: 0,
+      spotted: 0,
+      revive: 0,
+      hurtTime: 99,
+      laser: null,
+      marker: null,
+      tag: null,
+      tagDown: null,
+      tagUp: null,
+      hpBar: null,
+      hpFill: null,
+    };
+    for (const h of hitboxes) h.userData.unit = s;
+
+    if (team === "hostile") {
+      const lm = new THREE.MeshBasicMaterial({ color: 0xff2a3c, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+      owned.mats.push(lm);
+      s.laser = new THREE.Mesh(laserGeo, lm);
+      s.laser.visible = false;
+      s.laser.frustumCulled = false;
+      scene.add(s.laser);
+      const mm = new THREE.SpriteMaterial({ map: hostileTex, transparent: true, depthTest: false, sizeAttenuation: false });
+      owned.mats.push(mm);
+      s.marker = new THREE.Sprite(mm);
+      s.marker.scale.set(0.022, 0.022, 1);
+      s.marker.position.set(0, 2.25, 0);
+      s.marker.visible = false;
+      s.marker.renderOrder = 10;
+      root.add(s.marker);
+      s.hpBar = new THREE.Group();
+      s.hpBar.position.set(0, 2.08, 0);
+      s.hpBar.visible = false;
+      const bgM = new THREE.SpriteMaterial({ color: 0x1a0507, transparent: true, opacity: 0.75, depthTest: false, sizeAttenuation: false });
+      const fgM = new THREE.SpriteMaterial({ color: 0xff4d5c, depthTest: false, sizeAttenuation: false });
+      owned.mats.push(bgM, fgM);
+      const bg = new THREE.Sprite(bgM);
+      bg.scale.set(0.05, 0.006, 1);
+      bg.renderOrder = 10;
+      const fg = new THREE.Sprite(fgM);
+      fg.scale.set(0.046, 0.0035, 1);
+      fg.renderOrder = 11;
+      s.hpBar.add(bg, fg);
+      s.hpFill = fg;
+      root.add(s.hpBar);
+    }
+    if (team === "ally") {
+      s.tagUp = nameTag(name, "#9dffc4");
+      s.tagDown = nameTag(`${name} · DOWN`, "#ff6b74");
+      owned.tex.push(s.tagUp, s.tagDown);
+      const tm = new THREE.SpriteMaterial({ map: s.tagUp, transparent: true, depthTest: false, sizeAttenuation: false });
+      owned.mats.push(tm);
+      s.tag = new THREE.Sprite(tm);
+      s.tag.scale.set(0.09, 0.0225, 1);
+      s.tag.position.set(0, 2.2, 0);
+      s.tag.renderOrder = 10;
+      root.add(s.tag);
+    }
+
+    play(s, "Idle", 1);
+    soldiers.push(s);
+    return s;
   }
 
-  function chestOf(agent: Soldier) {
-    return agent.root.position.clone().add(new THREE.Vector3(0, 1.16, 0));
+  function removeSoldier(s: Soldier) {
+    s.actor.mixer.stopAllAction();
+    s.actor.mixer.uncacheRoot(s.model);
+    scene.remove(s.root);
+    if (s.laser) scene.remove(s.laser);
+    for (const m of s.owned.mats) m.dispose();
+    for (const t of s.owned.tex) t.dispose();
+    if (s.cover) s.cover.taken = null;
+    for (const arr of [soldiers, enemies, allies]) {
+      const i = arr.indexOf(s);
+      if (i >= 0) arr.splice(i, 1);
+    }
   }
 
-  // -------------------------------------------------------------- combat
-  function currentAimSpread() {
-    return (ads ? 0.2 : 0.6) * (Math.PI / 180);
+  function play(s: Soldier, name: string, ts: number) {
+    const a = s.actor;
+    const next = a.actions[name];
+    if (!next) return;
+    next.timeScale = ts;
+    if (a.current === name) return;
+    const prev = a.actions[a.current];
+    next.reset();
+    next.enabled = true;
+    next.setEffectiveWeight(1);
+    next.play();
+    if (prev) next.crossFadeFrom(prev, 0.22, false);
+    a.current = name;
   }
 
+  function animate(s: Soldier, forwardSpeed: number) {
+    const sp = s.speed;
+    if (sp < 0.25) play(s, "Idle", 1);
+    else if (forwardSpeed < -0.3) play(s, "Walk", -Math.max(0.7, Math.min(1.5, sp / 1.4)));
+    else if (sp > 2.4) play(s, "Run", Math.max(0.7, Math.min(1.35, sp / 4.6)));
+    else play(s, "Walk", Math.max(0.7, Math.min(1.6, sp / 1.4)));
+  }
+
+  // Upper-body pass: rifle orientation, torso blade, arm IK.
+  const lowReady = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.62, 0.55, 0.1, "YXZ"));
+  const aimQ = new THREE.Quaternion();
+  const poleR = new THREE.Vector3();
+  const poleL = new THREE.Vector3();
+  const handR = new THREE.Vector3();
+  const handL = new THREE.Vector3();
+  const pivotWorld = new THREE.Vector3();
+  const invBodyQ = new THREE.Quaternion();
+  const lookM = new THREE.Matrix4();
+  const aimTmp = new THREE.Vector3();
+  function upperBody(s: Soldier, dt: number) {
+    s.aimW += ((s.aiming ? 1 : 0) - s.aimW) * Math.min(1, dt * 10);
+    s.body.updateMatrixWorld(true);
+    s.pivot.getWorldPosition(pivotWorld);
+    aimTmp.copy(s.aimPoint);
+    if (aimTmp.distanceTo(pivotWorld) < 2.5) aimTmp.sub(pivotWorld).setLength(2.5).add(pivotWorld);
+    // Object3D convention: +Z looks at target → lookAt(eye=target, target=eye).
+    lookM.lookAt(aimTmp, pivotWorld, UP);
+    aimQ.setFromRotationMatrix(lookM);
+    s.body.getWorldQuaternion(invBodyQ).invert();
+    aimQ.premultiply(invBodyQ);
+    s.pivot.quaternion.slerpQuaternions(lowReady, aimQ, s.aimW);
+    s.pivot.updateMatrixWorld(true);
+    if (!s.bones) return;
+    const b = s.bones;
+    rotateBoneWorld(b.spine, UP, -0.42 * s.aimW);
+    rotateBoneWorld(b.neck, UP, 0.34 * s.aimW);
+    s.rifle.rightHand.getWorldPosition(handR);
+    s.rifle.leftHand.getWorldPosition(handL);
+    poleR.set(-0.6, 0.8, -0.25);
+    s.body.localToWorld(poleR);
+    poleL.set(0.25, 0.7, 0.35);
+    s.body.localToWorld(poleL);
+    solveArm(b.rArm, b.rFore, b.rHand, handR, poleR);
+    solveArm(b.lArm, b.lFore, b.lHand, handL, poleL);
+  }
+
+  function updateBodyPose(s: Soldier, dt: number) {
+    s.flinch *= Math.exp(-9 * dt);
+    if (!s.alive || s.down) s.fall = Math.min(1, s.fall + dt / 0.6);
+    else if (s.fall > 0) s.fall = Math.max(0, s.fall - dt / 0.7);
+    const f = s.fall;
+    const e = f * f * (3 - 2 * f);
+    const g = s.alive && !s.down ? e : f * f; // falling accelerates, rising eases
+    s.body.rotation.x = -Math.PI * 0.49 * g - s.flinch * 0.16;
+    s.body.rotation.z = s.fallRoll * g;
+    s.body.position.y = 0.17 * g;
+    if (s.alive && !s.down) {
+      const d = wrapAngle(s.faceYaw - s.root.rotation.y);
+      s.root.rotation.y += d * Math.min(1, dt * (s.team === "player" ? 16 : 9));
+    }
+    s.root.position.y += (groundY(s.root.position.x) - s.root.position.y) * Math.min(1, dt * 12);
+  }
+
+  // ----------------------------------------------------------- mission
+  function clearMission() {
+    for (const s of [...soldiers]) removeSoldier(s);
+    for (const p of pickups) scene.remove(p.obj);
+    pickups.length = 0;
+    for (const t of tracers) {
+      t.on = false;
+      t.mesh.visible = false;
+    }
+    for (const c of coverPoints) c.taken = null;
+    player = null;
+  }
+
+  function resetMission() {
+    clearMission();
+    phase = 1;
+    phaseTimer = 0;
+    pendingWave = 0;
+    uplink = 0;
+    uplinkStarted = false;
+    elapsed = 0;
+    kills = headshots = shots = hits = bonus = 0;
+    success = false;
+    deathTimer = 0;
+    timeScale = 1;
+    slowTimer = 0;
+    shake = 0;
+    damageFlash = 0;
+    lastHurt = 99;
+    quietTime = 0;
+    yaw = Math.PI;
+    pitch = -0.03;
+    recoil = recoilYaw = 0;
+    ads = false;
+    firing = false;
+    applyLoadout();
+    applyMode();
+    rebuildMag();
+    ammo = load.mag;
+    reserve = mod.reserve;
+    runMedals = {};
+    killTimes = [];
+    hsStreak = 0;
+    phaseDamage = 0;
+    allyWentDown = false;
+    reloadT = 0;
+    bloom = 0;
+    lastShot = 99;
+    hud.feed.innerHTML = "";
+    medalQueue = [];
+    medalTimer = 0;
+    hud.medal.classList.remove("on");
+    hud.pops.innerHTML = "";
+    hud.banner.classList.remove("on");
+    progGeo.setDrawRange(0, 0);
+    padMat.color.setHex(0x3c6e74);
+    beamMat.opacity = 0;
+
+    player = spawnSoldier("player", SPAWN.clone(), "YOU");
+    if (player) player.faceYaw = player.root.rotation.y = Math.PI;
+    const off: Array<[number, number]> = [
+      [-1.8, 2],
+      [1.9, 2.8],
+    ];
+    ALLY_NAMES.forEach((n, i) => {
+      const a = spawnSoldier("ally", new THREE.Vector3(SPAWN.x + off[i][0], 0, SPAWN.z + off[i][1]), n);
+      if (a) {
+        a.faceYaw = a.root.rotation.y = Math.PI;
+        allies.push(a);
+      }
+    });
+    spawnWave(mode === "daily" ? shuffleSpots(WAVE1, dailyOf(todayUTC()).seed) : WAVE1, false);
+    buildSquadHud();
+    setObjective();
+    updateHud(true);
+  }
+
+  function applyMode() {
+    const id = mode === "daily" ? dailyOf(todayUTC()).mod.id : "";
+    mod.night = id === "night";
+    mod.bodyDmg = id === "headhunt" ? 0.55 : 1;
+    mod.reserve = id === "scarce" ? 60 : RESERVE;
+    mod.drop = id === "scarce" ? 0.4 : 0.75;
+    mod.regen = id !== "ironman";
+    mod.enemyAcc = id === "blitz" ? 1.25 : 1;
+    mod.reaction = id === "blitz" ? 0.6 : 1;
+    renderer.toneMappingExposure = mod.night ? 0.8 : 0.95;
+    scene.backgroundIntensity = mod.night ? 0.03 : 0.16;
+    (scene.fog as THREE.FogExp2).density = mod.night ? 0.034 : 0.026;
+    hemi.intensity = mod.night ? 0.32 : 0.55;
+    sun.intensity = mod.night ? 0.45 : 1.7;
+    sun.color.setHex(mod.night ? 0x7d92d6 : 0xff9f6a);
+    rainMat.opacity = mod.night ? 0.4 : 0.28;
+  }
+
+  /** Daily layout: deterministic jitter of the patrol positions. */
+  function shuffleSpots(spots: Array<[number, number]>, seed: number): Array<[number, number]> {
+    const r = mulberry32(seed);
+    return spots.map(([x, z]) => {
+      for (let k = 0; k < 6; k++) {
+        const nx = THREE.MathUtils.clamp(x + (r() - 0.5) * 6, -ROAD_HALF + 0.8, ROAD_HALF - 0.8);
+        const nz = z + (r() - 0.5) * 5;
+        if (!blockedAt(nx, nz, 0.6)) return [nx, nz] as [number, number];
+      }
+      return [x, z] as [number, number];
+    });
+  }
+
+  function spawnWave(spots: Array<[number, number]>, alerted: boolean) {
+    for (const [x, z] of spots) {
+      const e = spawnSoldier("hostile", new THREE.Vector3(x, 0, z));
+      if (!e) continue;
+      if (!alerted) {
+        e.faceYaw = e.root.rotation.y = fx() * Math.PI * 2;
+        for (let k = 0; k < 3; k++) {
+          const px = THREE.MathUtils.clamp(x + (fx() - 0.5) * 5, -ROAD_HALF + 0.8, ROAD_HALF - 0.8);
+          const pz = z + (fx() - 0.5) * 6;
+          if (!blockedAt(px, pz, 0.5)) e.patrol.push(new THREE.Vector3(px, 0, pz));
+        }
+        e.patrol.push(new THREE.Vector3(x, 0, z));
+      } else {
+        e.faceYaw = e.root.rotation.y = z > (player?.root.position.z ?? 0) ? Math.PI : 0;
+        alertEnemy(e, 0.2);
+      }
+      enemies.push(e);
+    }
+  }
+
+  const PHASES = [
+    { k: "PHASE 1/3", t: "CLEAR THE STREET" },
+    { k: "PHASE 2/3", t: "REPEL REINFORCEMENTS" },
+    { k: "PHASE 3/3", t: "HOLD THE UPLINK" },
+  ];
+
+  function hostilesLeft() {
+    let n = 0;
+    for (const e of enemies) if (e.alive) n++;
+    return n;
+  }
+
+  function setObjective() {
+    const p = PHASES[phase - 1];
+    hud.objPhase.textContent = p.k;
+    hud.objTitle.textContent = p.t;
+  }
+
+  function advancePhase() {
+    bonus += 250;
+    if (phaseDamage === 0) medal("untouchable");
+    phaseDamage = 0;
+    addPop("+250 SECTOR CLEAR", false);
+    if (phase === 1) {
+      phase = 2;
+      pendingWave = 2;
+      phaseTimer = 3.2;
+      banner("PHASE 2 / 3", "REINFORCEMENTS INBOUND", "Hostile squad entering from the north end", true, 3.2);
+      audio.alarm();
+    } else if (phase === 2) {
+      phase = 3;
+      banner("PHASE 3 / 3", "REACH THE UPLINK", "Stand on the pad until the upload completes", false, 3.4);
+      audio.objective();
+      padMat.color.setHex(0x6ff2e3);
+    }
+    setObjective();
+  }
+
+  function finishMission(won: boolean) {
+    if (stage !== "playing") return;
+    success = won;
+    stage = "dead"; // short cinematic hold before the debrief
+    deathTimer = 0;
+    firing = false;
+    ads = false;
+    if (won) {
+      bonus += 500;
+      if (player && player.hp < 30) medal("clutch");
+      banner("UPLINK COMPLETE", "EXTRACTION CONFIRMED", "", false, 2.6);
+      audio.objective();
+    } else {
+      banner("OPERATOR DOWN", "MISSION FAILED", "", true, 2.4);
+    }
+    if (document.pointerLockElement === canvas) document.exitPointerLock();
+  }
+
+  // ------------------------------------------------------------- combat
+  const aimTargets: THREE.Object3D[] = [];
+  function collectTargets() {
+    aimTargets.length = 0;
+    for (const e of enemies) if (e.alive) for (const h of e.hitboxes) aimTargets.push(h);
+    for (const b of blockers) aimTargets.push(b);
+    return aimTargets;
+  }
+
+  const muzzleW = new THREE.Vector3();
+  function muzzleOf(s: Soldier, out: THREE.Vector3) {
+    return s.rifle.muzzle.getWorldPosition(out);
+  }
+
+  function spreadNow() {
+    const moving = player ? Math.min(1, player.speed / 6) : 0;
+    const base = ads ? 0.22 * load.adsSpread : 1.2;
+    return THREE.MathUtils.degToRad(base + moving * (ads ? 0.7 : 2.2) + bloom);
+  }
+
+  const shotDir = new THREE.Vector3();
+  const sideV = new THREE.Vector3();
+  const upV = new THREE.Vector3();
   function playerFire() {
-    if (!player || !player.alive || fireCd > 0 || player.reloadCd > 0) return;
-    if (player.ammo <= 0) {
-      startReload();
+    if (!player || !player.alive || fireCd > 0 || reloadT > 0) return;
+    if (ammo <= 0) {
+      audio.dry();
+      fireCd = 0.25;
+      if (reserve > 0) startReload();
       return;
     }
     fireCd = FIRE_INTERVAL;
-    player.ammo -= 1;
+    ammo -= 1;
     shots += 1;
-    spawnFlash(muzzleOf(player), false);
-    sfx.rifle();
-    shake = Math.min(0.4, shake + 0.045);
+    shotsFired += 1;
+    lastShot = 0;
+    audio.rifle();
+    alertByNoise(player.root.position, load.noise);
 
-    const angle = rng() * Math.PI * 2;
-    const radius = currentAimSpread() * Math.sqrt(rng());
-    const dx = Math.tan(Math.cos(angle) * radius);
-    const dy = Math.tan(Math.sin(angle) * radius);
-    const tanY = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
-    const ndc = new THREE.Vector2(dx / (tanY * camera.aspect), dy / tanY);
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera(ndc, camera);
-    raycaster.far = RANGE;
+    const sp = spreadNow();
+    const ang = fx() * Math.PI * 2;
+    const r = sp * Math.sqrt(fx());
+    sideV.crossVectors(fwd3, UP).normalize();
+    upV.crossVectors(sideV, fwd3).normalize();
+    shotDir.copy(fwd3).addScaledVector(sideV, Math.cos(ang) * r).addScaledVector(upV, Math.sin(ang) * r).normalize();
+    ray.set(camera.position, shotDir);
+    ray.far = 120;
+    const minD = camera.position.distanceTo(camPivot) * 0.9;
+    const first = ray.intersectObjects(collectTargets(), false).find((h) => h.distance > minD);
+    const impact = first ? first.point.clone() : camera.position.clone().addScaledVector(shotDir, 120);
 
-    const targets: THREE.Object3D[] = [];
-    for (const e of enemies) {
-      if (!e.alive) continue;
-      e.model.traverse((o) => {
-        if ((o as THREE.Mesh).isMesh) targets.push(o);
-      });
+    // The bullet actually leaves the muzzle: cover right in front of us stops it.
+    muzzleOf(player, muzzleW);
+    let hitObj = first?.object;
+    tmpV2.subVectors(impact, muzzleW);
+    const md = tmpV2.length();
+    if (md > 0.3) {
+      losRay.set(muzzleW, tmpV2.divideScalar(md));
+      losRay.far = md - 0.15;
+      const blk = losRay.intersectObjects(blockers, false)[0];
+      if (blk) {
+        impact.copy(blk.point);
+        hitObj = blk.object;
+      }
     }
-    const allHits = [
-      ...raycaster.intersectObjects(targets, false).map((h) => ({ hit: h, enemy: enemyByMesh.get(h.object) })),
-      ...raycaster.intersectObjects(coverMeshes, false).map((h) => ({ hit: h, enemy: undefined })),
-    ].sort((a, b) => a.hit.distance - b.hit.distance);
-    const first = allHits[0];
-    const impact = first
-      ? first.hit.point.clone()
-      : raycaster.ray.origin.clone().addScaledVector(raycaster.ray.direction, RANGE);
-    spawnTracer(muzzleOf(player), impact, 0xffe0b0);
-    if (first?.enemy && first.enemy.alive) {
+    const supp = load.noise < 20;
+    spawnFlash(muzzleW, supp ? 0.16 : 0.42);
+    muzzleLight.position.copy(muzzleW);
+    muzzleLight.intensity = supp ? 4 : 22;
+    spawnTracer(muzzleW, impact, 0xffd9a0);
+
+    const unit = hitObj?.userData.unit as Soldier | undefined;
+    if (unit && unit.alive && hitObj) {
+      const part = hitObj.userData.part as string;
       hits += 1;
-      showHit(false);
-      spawnSparks(impact);
-      sfx.hit();
-      damageEnemy(first.enemy, BULLET_DAMAGE);
+      const dmg = (part === "head" ? DMG_HEAD : (part === "legs" ? DMG_LEGS : DMG_BODY) * mod.bodyDmg) * load.dmg;
+      spawnSparks(impact, 0xff6a4a, 0.7);
+      spawnPuff(impact, 0x4a0a0c, 0.6, 0.45, 0.6);
+      damage(unit, dmg, player, part === "head");
     } else if (first) {
-      spawnSparks(impact, 0xa9b7c2);
+      tmpV3.copy(shotDir).negate();
+      spawnSparks(impact, 0xffd49a, 0.8, tmpV3);
+      spawnPuff(impact, 0x9aa0a6, 0.7, 0.6);
+      audio.impact(impact.distanceTo(camera.position), 0);
     }
-
-    if (stage === "tutorial" && tutStep === 1) {
-      tutStep = 2;
-      showTutorial();
-    }
-    if (player.ammo === 0) startReload();
-    updateHud();
+    const k = ads ? 0.55 : 1;
+    recoil += (0.0085 + fx() * 0.004) * k * load.recoil;
+    recoilYaw += (fx() - 0.45) * 0.005 * k * load.recoil;
+    bloom = Math.min(2.2, bloom + (ads ? 0.18 : 0.32));
+    shake = Math.min(0.12, shake + 0.03);
+    if (ammo === 0 && reserve > 0) startReload();
   }
 
   function startReload() {
-    if (!player || !player.alive || player.reloadCd > 0 || player.ammo === MAG) return;
-    player.reloadCd = RELOAD_TIME;
-    sfx.reload();
+    if (!player || !player.alive || reloadT > 0 || ammo >= load.mag || reserve <= 0) return;
+    reloadDur = (ammo === 0 ? RELOAD_EMPTY : RELOAD_TIME) + load.reloadExtra;
+    reloadT = reloadDur;
+    reloadStage = 0;
+    audio.reloadOut();
   }
 
-  function damageEnemy(enemy: Soldier, amount: number) {
-    if (!enemy.alive) return;
-    enemy.hp -= amount;
-    if (enemy.hpGroup) enemy.hpGroup.visible = true;
-    if (enemy.hpFill) enemy.hpFill.scale.x = 0.84 * Math.max(0, enemy.hp / PLAYER_HP);
-    if (enemy.hp > 0) return;
-    killEnemy(enemy);
+  function updateReload(dt: number) {
+    if (reloadT <= 0) return;
+    reloadT -= dt;
+    const p = 1 - reloadT / reloadDur;
+    if (reloadStage === 0 && p > 0.55) {
+      reloadStage = 1;
+      audio.reloadIn();
+    }
+    if (reloadStage === 1 && p > 0.82 && ammo === 0) {
+      reloadStage = 2;
+      audio.bolt();
+    }
+    if (reloadT <= 0) {
+      reloadT = 0;
+      const take = Math.min(load.mag - ammo, reserve);
+      ammo += take;
+      reserve -= take;
+    }
   }
 
-  function killEnemy(enemy: Soldier) {
-    if (!enemy.alive) return;
-    enemy.alive = false;
-    enemy.deathTimer = 0;
-    enemy.speed = 0;
+  function damage(target: Soldier, amount: number, src: Soldier | null, head = false) {
+    if (!target.alive || target.down) return;
+    target.hp -= amount;
+    target.flinch = 1;
+    target.hurtTime = 0;
+    if (target.team === "hostile") {
+      if (target.hpBar) target.hpBar.visible = true;
+      if (target.hpFill) target.hpFill.scale.x = 0.046 * Math.max(0, target.hp / target.maxHp);
+      target.spotted = 5;
+      if (target.state !== "combat" && target.hp > 0) alertEnemy(target, 0.15);
+      if (src?.team === "player") {
+        showHit(target.hp <= 0 ? "kill" : head ? "hs" : "hit");
+        if (target.hp > 0) audio.hitmarker();
+      }
+      if (target.hp <= 0) killEnemy(target, src, head);
+      else if (fx() < 0.35) target.coverTimer = 0; // relocate under fire
+      return;
+    }
+    if (target.team === "player") {
+      lastHurt = 0;
+      phaseDamage += amount;
+      damageFlash = Math.min(1, damageFlash + amount / 30);
+      shake = Math.min(0.25, shake + 0.08);
+      audio.hurt();
+      if (src) addDamageIndicator(src.root.position);
+      if (target.hp <= 0) {
+        target.hp = 0;
+        target.alive = false;
+        target.fallRoll = (fx() - 0.5) * 0.5;
+        finishMission(false);
+      }
+      return;
+    }
+    if (target.hp <= 0) {
+      target.hp = 0;
+      target.down = true;
+      allyWentDown = true;
+      target.revive = 0;
+      target.fallRoll = (fx() - 0.5) * 0.6;
+      if (target.tag && target.tagDown) (target.tag.material as THREE.SpriteMaterial).map = target.tagDown;
+      feed(`<em>${esc(target.name)}</em> DOWN — REVIVE`, "bad");
+    }
+  }
+
+  function killEnemy(e: Soldier, src: Soldier | null, head: boolean) {
+    e.alive = false;
+    e.hp = 0;
+    e.deadTime = 0;
+    e.fallRoll = (fx() - 0.5) * 0.7;
+    if (e.cover) e.cover.taken = null;
+    e.cover = null;
+    if (e.laser) e.laser.visible = false;
+    if (e.marker) e.marker.visible = false;
+    if (e.hpBar) e.hpBar.visible = false;
+    if (src) {
+      e.faceYaw = Math.atan2(src.root.position.x - e.root.position.x, src.root.position.z - e.root.position.z);
+      e.root.rotation.y = e.faceYaw;
+    }
     kills += 1;
-    playClip(enemy.actor, "Idle");
-    (enemy.ring.material as THREE.MeshBasicMaterial).color.setHex(0x5a3532);
-    (enemy.ring.material as THREE.MeshBasicMaterial).opacity = 0.3;
-    if (enemy.hpGroup) enemy.hpGroup.visible = false;
-    showHit(true);
-    timeScale = 0.35;
-    slowTimer = 0.25;
-    shake = Math.min(0.4, shake + 0.14);
-    sfx.death();
-    const remaining = HOSTILE_COUNT - kills;
-    if (remaining > 0) popup(`HOSTILE DOWN · ${remaining} REMAIN`);
-    if (remaining === 0) {
-      popup("EXTRACTION OPEN");
-      (extractOuter.material as THREE.MeshBasicMaterial).color.setHex(0x8fffe9);
-      extractDashMat.color.setHex(0x8fffe9);
+    const byPlayer = src?.team === "player";
+    if (byPlayer && player) {
+      const now = elapsed;
+      killTimes = killTimes.filter((t) => now - t < 1.8);
+      killTimes.push(now);
+      if (killTimes.length === 3) medal("triple");
+      else if (killTimes.length === 2) medal("double");
+      hsStreak = head ? hsStreak + 1 : 0;
+      if (hsStreak === 3) medal("headhunter");
+      if (e.state === "patrol") medal("ghost");
+      if (e.root.position.distanceTo(player.root.position) > 28) medal("marksman");
     }
-    updateHud();
-  }
-
-  function damageFriendly(unit: Soldier, amount: number) {
-    if (!unit.alive) return;
-    unit.hp -= amount;
-    if (unit.team === "player") {
-      shake = Math.min(0.4, shake + 0.11);
-      updateHud();
+    if (byPlayer) {
+      if (head) {
+        headshots += 1;
+        audio.headshot();
+        addPop("HEADSHOT +150", true);
+      } else {
+        audio.kill();
+        addPop("ELIMINATED +100", false);
+      }
+      bonus += head ? 150 : 100;
+    } else {
+      bonus += 50;
     }
-    if (unit.hp > 0) return;
-    unit.alive = false;
-    unit.hp = 0;
-    unit.speed = 0;
-    unit.fireCd = 0;
-    (unit.ring.material as THREE.MeshBasicMaterial).color.setHex(0x6a4a4a);
-    (unit.ring.material as THREE.MeshBasicMaterial).opacity = 0.3;
-    if (unit.marker) unit.marker.visible = false;
-    for (const m of unit.materials) {
-      const sm = m as THREE.MeshStandardMaterial;
-      if (sm.color) sm.color.multiplyScalar(0.45);
-    }
-    if (unit.team === "player") {
-      popup("OPERATOR DOWN");
-      endMission(false);
+    feed(`${esc(byPlayer ? "YOU" : src?.name ?? "SQUAD")} <em>✕</em> HOSTILE${head ? " <u>◎ HEADSHOT</u>" : ""}`, head ? "hs" : "");
+    if (fx() < mod.drop) dropAmmo(e.root.position);
+    if (hostilesLeft() === 0 && pendingWave === 0 && phase < 3) {
+      timeScale = 0.3;
+      slowTimer = 0.7;
+      advancePhase();
     }
   }
 
-  function nearestHostile(from: THREE.Vector3, maxDist: number) {
-    let best: Soldier | null = null;
-    let bestDist = maxDist;
-    for (const e of enemies) {
-      if (!e.alive) continue;
-      const d = from.distanceTo(e.root.position);
-      if (d < bestDist) {
-        best = e;
-        bestDist = d;
+  function closestOnSegment(a: THREE.Vector3, b: THREE.Vector3, p: THREE.Vector3) {
+    tmpV2.subVectors(b, a);
+    const l2 = tmpV2.lengthSq();
+    const t = l2 > 0 ? THREE.MathUtils.clamp(tmpV.copy(p).sub(a).dot(tmpV2) / l2, 0, 1) : 0;
+    return tmpV.copy(a).addScaledVector(tmpV2, t).distanceTo(p);
+  }
+
+  function panOf(pos: THREE.Vector3) {
+    tmpV.subVectors(pos, camera.position).normalize();
+    return THREE.MathUtils.clamp(tmpV.dot(camRight) * 0.85, -0.85, 0.85);
+  }
+
+  const shotEnd = new THREE.Vector3();
+  function remoteShot(shooter: Soldier, t: Soldier, hit: boolean, aimH: number, spread: number) {
+    muzzleOf(shooter, muzzleW);
+    shotEnd.set(t.root.position.x, t.root.position.y + aimH, t.root.position.z);
+    const d = muzzleW.distanceTo(shotEnd);
+    if (!hit) {
+      shotEnd.x += (fx() - 0.5) * spread;
+      shotEnd.y += (fx() - 0.3) * spread * 0.55;
+      shotEnd.z += (fx() - 0.5) * spread;
+      tmpV.subVectors(shotEnd, muzzleW).normalize();
+      shotEnd.copy(muzzleW).addScaledVector(tmpV, d + 12);
+    }
+    tmpV2.subVectors(shotEnd, muzzleW);
+    const len = tmpV2.length();
+    losRay.set(muzzleW, tmpV2.divideScalar(len));
+    losRay.far = hit ? len - 0.3 : len;
+    const blk = losRay.intersectObjects(blockers, false)[0];
+    if (blk) shotEnd.copy(blk.point);
+    const hostile = shooter.team === "hostile";
+    spawnFlash(muzzleW, 0.36);
+    spawnTracer(muzzleW, shotEnd, hostile ? 0xff6a5a : 0xbff7d8, hostile ? 210 : 240);
+    audio.remoteShot(camera.position.distanceTo(muzzleW), panOf(shooter.root.position), hostile);
+    if (blk) {
+      spawnSparks(shotEnd, 0xffc48a, 0.6);
+      spawnPuff(shotEnd, 0x8a9096, 0.5, 0.5);
+      return false;
+    }
+    if (hit) {
+      spawnSparks(shotEnd, 0xff7050, 0.5);
+      return true;
+    }
+    if (t === player) {
+      tmpV3.set(player.root.position.x, 1.4, player.root.position.z);
+      if (closestOnSegment(muzzleW, shotEnd, tmpV3) < 2.2) {
+        audio.whiz(panOf(shooter.root.position));
+        shake = Math.min(0.2, shake + 0.03);
       }
     }
-    return { enemy: best, dist: bestDist };
+    return false;
   }
 
-  function allyFire(a: Soldier, target: Soldier) {
-    if (a.fireCd > 0 || !a.alive) return;
-    a.fireCd = 1.5;
-    const from = muzzleOf(a);
-    const to = chestOf(target);
-    spawnTracer(from, to, 0xbfe9dc);
-    spawnFlash(from, false);
-    if (rng() < 0.45) {
-      spawnSparks(to, 0xbfe9dc);
-      damageEnemy(target, 18 + Math.floor(rng() * 7));
+  function enemyFire(e: Soldier, t: Soldier) {
+    const d = e.root.position.distanceTo(t.root.position);
+    let aimH = 1.25;
+    let p = 0.42 * mod.enemyAcc * THREE.MathUtils.clamp(1.25 - d / 28, 0.3, 1);
+    // Chest behind cover? Then only the head is exposed.
+    if (!los(e.root.position, 1.45, t.root.position, 1.15)) {
+      aimH = 1.62;
+      p *= 0.45;
+    }
+    if (t === player) {
+      if (player.speed > 4.5) p *= 0.5;
+      else if (player.speed > 1) p *= 0.72;
+    }
+    if (phase === 3) p *= 1.1;
+    if (remoteShot(e, t, fx() < p, aimH, 1.6)) damage(t, t === player ? 6 + Math.floor(fx() * 4) : 10 + Math.floor(fx() * 5), e);
+  }
+
+  function allyFire(a: Soldier, t: Soldier) {
+    const d = a.root.position.distanceTo(t.root.position);
+    const p = 0.4 * THREE.MathUtils.clamp(1.3 - d / 30, 0.35, 1);
+    if (remoteShot(a, t, fx() < p, 1.25, 1.4)) damage(t, 15, a, false);
+    alertByNoise(a.root.position, 22);
+  }
+
+  function alertEnemy(e: Soldier, reaction: number) {
+    if (!e.alive || e.state === "combat") return;
+    e.state = "combat";
+    e.reaction = reaction * mod.reaction;
+    e.coverTimer = 0;
+    e.burstCd = 0.5 + fx() * 0.6;
+  }
+
+  function alertByNoise(pos: THREE.Vector3, radius: number) {
+    for (const e of enemies) {
+      if (!e.alive || e.state === "combat") continue;
+      if (e.root.position.distanceTo(pos) < radius) alertEnemy(e, 0.35 + fx() * 0.4);
     }
   }
 
-  function enemyFire(e: Soldier, target: Soldier) {
-    if (e.fireCd > 0 || !e.alive) return;
-    e.fireCd = 1.3;
-    const from = muzzleOf(e);
-    const to = chestOf(target);
-    spawnTracer(from, to, 0xff8268);
-    spawnFlash(from, true);
-    sfx.enemy();
-    if (rng() < 0.65) {
-      spawnSparks(to, 0xff9270);
-      damageFriendly(target, 12 + Math.floor(rng() * 7));
+  // Ammo pickups.
+  const pickRingGeo = G(new THREE.RingGeometry(0.42, 0.5, 32));
+  const pickRingMat = M(
+    new THREE.MeshBasicMaterial({ color: 0x6ff2e3, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  let crateBox: THREE.Box3 | null = null;
+  function dropAmmo(at: THREE.Vector3) {
+    if (!crateSrc) return;
+    if (!crateBox) crateBox = new THREE.Box3().setFromObject(crateSrc);
+    const g = new THREE.Group();
+    g.position.set(at.x + (fx() - 0.5) * 0.6, groundY(at.x), at.z + (fx() - 0.5) * 0.6);
+    const c = crateSrc.clone(true);
+    c.scale.setScalar(0.55);
+    const inner = new THREE.Group();
+    inner.add(c);
+    c.position.y = -crateBox.min.y * 0.55;
+    g.add(inner);
+    const ring = new THREE.Mesh(pickRingGeo, pickRingMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.03;
+    g.add(ring);
+    scene.add(g);
+    pickups.push({ obj: g, ring, life: 45, t: fx() * 6 });
+  }
+
+  function updatePickups(dt: number) {
+    for (let i = pickups.length - 1; i >= 0; i--) {
+      const p = pickups[i];
+      p.life -= dt;
+      p.t += dt;
+      const inner = p.obj.children[0];
+      inner.rotation.y += dt * 1.4;
+      inner.position.y = 0.16 + Math.sin(p.t * 3) * 0.05;
+      p.ring.scale.setScalar(1 + Math.sin(p.t * 4) * 0.08);
+      let take = false;
+      if (player?.alive && player.root.position.distanceTo(p.obj.position) < 1.3 && reserve < RESERVE_MAX) {
+        reserve = Math.min(RESERVE_MAX, reserve + MAG);
+        audio.pickup();
+        addPop("+30 AMMO", false);
+        take = true;
+      }
+      if (take || p.life <= 0) {
+        scene.remove(p.obj);
+        pickups.splice(i, 1);
+      }
     }
   }
 
-  function endMission(won: boolean) {
-    if (ended) return;
-    ended = true;
-    stage = "ended";
-    success = won;
-    firing = false;
-    if (won) popup("MISSION ACCOMPLISHED");
-    const accuracy = shots > 0 ? hits / shots : 0;
-    const accuracyBonus = Math.round(accuracy * 300);
-    const timeBonus = won ? Math.max(0, 600 - Math.floor(elapsed) * 4) : 0;
-    score = kills * 150 + accuracyBonus + timeBonus;
-    hooks.onScore(score);
-    const alliesAlive = allies.filter((a) => a.alive).length;
-    hooks.onGameOver(score, [
-      { label: "RESULT", value: won ? "SUCCESS" : "FAILED" },
-      { label: "KILLS", value: `${kills}/${HOSTILE_COUNT}` },
-      { label: "TIME", value: formatTime(elapsed) },
-      { label: "SURVIVORS", value: `${alliesAlive + (player?.alive ? 1 : 0)}/${ALLY_COUNT + 1}` },
-    ]);
+  // ----------------------------------------------------------- AI: enemy
+  function pickTarget(e: Soldier): Soldier | null {
+    let bestT: Soldier | null = null;
+    let bestScore = Infinity;
+    const cands: Soldier[] = [];
+    if (player?.alive) cands.push(player);
+    for (const a of allies) if (a.alive && !a.down) cands.push(a);
+    for (const c of cands) {
+      const d = e.root.position.distanceTo(c.root.position);
+      if (d > 40) continue;
+      const score = d * (c === player ? 0.75 : 1) + fx() * 6;
+      if (score < bestScore) {
+        bestScore = score;
+        bestT = c;
+      }
+    }
+    return bestT;
   }
 
-  // ----------------------------------------------------------- simulation
+  function chooseCover(e: Soldier, threat: THREE.Vector3) {
+    let bestC: CoverPoint | null = null;
+    let bestS = Infinity;
+    for (const c of coverPoints) {
+      if (c.taken && c.taken !== e && c.taken.alive) continue;
+      const de = c.pos.distanceTo(e.root.position);
+      if (de > 15) continue;
+      const dt = c.pos.distanceTo(threat);
+      if (dt < 6 || dt > 28) continue;
+      tmpV.subVectors(threat, c.pos).setY(0).normalize();
+      const protect = -tmpV.dot(c.normal);
+      if (protect < 0.35) continue;
+      const s = de + Math.abs(dt - 15) * 0.45 - protect * 4 + fx() * 2.5;
+      if (s < bestS) {
+        bestS = s;
+        bestC = c;
+      }
+    }
+    if (e.cover && e.cover !== bestC) e.cover.taken = null;
+    e.cover = bestC;
+    if (bestC) bestC.taken = e;
+  }
+
+  const chase = new THREE.Vector3();
+  function updateEnemy(e: Soldier, dt: number) {
+    e.spotted = Math.max(0, e.spotted - dt);
+    e.hurtTime += dt;
+    if (!e.alive) {
+      e.deadTime += dt;
+      if (e.deadTime > 8) e.root.position.y -= dt * 0.35;
+      if (e.deadTime > 10) removeSoldier(e);
+      return;
+    }
+    e.burstCd -= dt;
+    e.shotCd -= dt;
+    e.losTimer -= dt;
+    const bx = e.root.position.x;
+    const bz = e.root.position.z;
+
+    if (e.state === "patrol") {
+      e.aiming = false;
+      if (player?.alive) {
+        const d = e.root.position.distanceTo(player.root.position);
+        if (e.losTimer <= 0) {
+          e.losTimer = 0.2;
+          tmpV.subVectors(player.root.position, e.root.position).setY(0).normalize();
+          const facing = Math.sin(e.root.rotation.y) * tmpV.x + Math.cos(e.root.rotation.y) * tmpV.z;
+          e.los = d < 24 && (facing > 0.45 || d < 4) && los(e.root.position, 1.5, player.root.position, 1.3);
+        }
+        if (e.los) {
+          const rate = (d < 8 ? 1.5 : d < 16 ? 0.55 : 0.25) * (player.speed > 4.5 ? 1.7 : player.speed < 0.5 ? 0.7 : 1);
+          e.awareness += rate * dt;
+          if (e.awareness >= 1) {
+            alertEnemy(e, 0.25);
+            for (const o of enemies) {
+              if (o !== e && o.alive && o.root.position.distanceTo(e.root.position) < 14) alertEnemy(o, 0.6 + fx() * 0.5);
+            }
+          }
+        } else e.awareness = Math.max(0, e.awareness - dt * 0.3);
+      }
+      if (e.waitTime > 0) {
+        e.waitTime -= dt;
+        e.speed = 0;
+      } else if (e.patrol.length) {
+        const wp = e.patrol[e.patrolIndex % e.patrol.length];
+        if (moveToward(e, wp, 1.25, dt, 0.5)) {
+          e.patrolIndex++;
+          e.waitTime = 1.5 + fx() * 2.5;
+        }
+      }
+      if (e.laser) e.laser.visible = false;
+    } else {
+      if (e.reaction > 0) {
+        e.reaction -= dt;
+        e.speed = 0;
+      }
+      if (!e.target || !e.target.alive || e.target.down || fx() < dt * 0.15) e.target = pickTarget(e);
+      let t = e.target;
+      if (e.losTimer <= 0) {
+        e.losTimer = 0.18 + fx() * 0.1;
+        e.los = !!t && los(e.root.position, 1.5, t.root.position, 1.3);
+        if (t && !e.los) {
+          const alt = [player, ...allies].find((c) => c && c.alive && !c.down && c !== t && los(e.root.position, 1.5, c.root.position, 1.3));
+          if (alt) {
+            e.target = t = alt;
+            e.los = true;
+          }
+        }
+      }
+      if (e.los && t === player) e.spotted = 4;
+      e.noLosTime = e.los ? 0 : e.noLosTime + dt;
+      e.coverTimer -= dt;
+      const threat = t ? t.root.position : (player?.root.position ?? SPAWN);
+      if (e.coverTimer <= 0) {
+        chooseCover(e, threat);
+        e.coverTimer = 7 + fx() * 6;
+        e.peek = null;
+      }
+      let dest: THREE.Vector3 | null = null;
+      let run = 3.6;
+      if (e.peek) dest = e.peek;
+      else if (e.cover) dest = e.cover.pos;
+      else if (t && (!e.los || e.root.position.distanceTo(t.root.position) > 22)) {
+        dest = chase.copy(t.root.position);
+        run = 2.8;
+      }
+      if (e.noLosTime > 2.6 && t) {
+        // Peek: sidestep from cover until there's a line to the target.
+        e.noLosTime = 0;
+        const nx = e.cover ? e.cover.normal.x : 0;
+        const nz = e.cover ? e.cover.normal.z : 1;
+        for (const side of fx() < 0.5 ? [1, -1] : [-1, 1]) {
+          for (const dist of [1.2, 2]) {
+            tmpV3.set(e.root.position.x - nz * side * dist, 0, e.root.position.z + nx * side * dist);
+            if (!blockedAt(tmpV3.x, tmpV3.z, 0.4) && los(tmpV3, 1.5, t.root.position, 1.3)) {
+              e.peek = tmpV3.clone();
+              break;
+            }
+          }
+          if (e.peek) break;
+        }
+        if (!e.peek) {
+          if (e.cover) e.cover.taken = null;
+          e.cover = null;
+          e.coverTimer = 3;
+        }
+      }
+      let moving = false;
+      if (e.reaction <= 0 && dest) {
+        const arrived = moveToward(e, dest, e.burst > 0 ? 1.6 : run, dt, 0.35);
+        moving = !arrived;
+        if (arrived && e.peek && !e.los) e.peek = null;
+      }
+      if (!moving) e.speed = 0;
+      const canShoot = e.reaction <= 0 && !!t && e.los && e.root.position.distanceTo(t.root.position) < 36;
+      e.aiming = true;
+      if (t) {
+        e.aimPoint.set(t.root.position.x, t.root.position.y + 1.25, t.root.position.z);
+        if (!moving || canShoot) e.faceYaw = Math.atan2(t.root.position.x - e.root.position.x, t.root.position.z - e.root.position.z);
+      }
+      if (canShoot && t) {
+        if (e.burst === 0 && e.burstCd <= 0) {
+          if (e.aimTimer < 0.55) e.aimTimer += dt;
+          else {
+            e.burst = 3 + Math.floor(fx() * 2);
+            e.aimTimer = 0;
+          }
+        }
+        if (e.burst > 0 && e.shotCd <= 0 && Math.abs(wrapAngle(e.faceYaw - e.root.rotation.y)) < 0.35) {
+          enemyFire(e, t);
+          e.burst -= 1;
+          e.shotCd = 0.11;
+          if (e.burst === 0) e.burstCd = 1.0 + fx() * 1.3;
+        }
+      } else {
+        e.aimTimer = Math.max(0, e.aimTimer - dt);
+        e.burst = 0;
+      }
+      if (e.laser) {
+        const show = canShoot && (e.aimTimer > 0 || e.burst > 0);
+        e.laser.visible = show;
+        if (show) {
+          muzzleOf(e, muzzleW);
+          e.laser.position.copy(muzzleW);
+          e.laser.lookAt(e.aimPoint);
+          e.laser.scale.set(1, 1, muzzleW.distanceTo(e.aimPoint));
+          (e.laser.material as THREE.MeshBasicMaterial).opacity = e.burst > 0 ? 0.65 : 0.15 + (e.aimTimer / 0.55) * 0.4;
+        }
+      }
+    }
+    const fwd = (e.root.position.x - bx) * Math.sin(e.root.rotation.y) + (e.root.position.z - bz) * Math.cos(e.root.rotation.y);
+    animate(e, dt > 0 ? fwd / dt : 0);
+    if (e.marker) e.marker.visible = e.spotted > 0;
+  }
+
+  // ------------------------------------------------------------ AI: ally
+  const formation = new THREE.Vector3();
+  function updateAlly(a: Soldier, i: number, dt: number) {
+    a.hurtTime += dt;
+    if (a.down) {
+      a.aiming = false;
+      a.speed = 0;
+      if (player?.alive && player.root.position.distanceTo(a.root.position) < 1.9) {
+        a.revive += dt;
+        if (a.revive >= 2.4) {
+          a.down = false;
+          a.hp = 60;
+          a.revive = 0;
+          bonus += 75;
+          medal("lifesaver");
+          audio.revive();
+          addPop(`${a.name} REVIVED +75`, false);
+          feed(`YOU <em>+</em> REVIVED ${esc(a.name)}`, "");
+          if (a.tag && a.tagUp) (a.tag.material as THREE.SpriteMaterial).map = a.tagUp;
+        }
+      } else a.revive = Math.max(0, a.revive - dt * 0.5);
+      return;
+    }
+    if (!player) return;
+    if (a.hurtTime > 6) a.hp = Math.min(a.maxHp, a.hp + dt * 6);
+    a.burstCd -= dt;
+    a.shotCd -= dt;
+    a.losTimer -= dt;
+    const backX = -Math.sin(yaw);
+    const backZ = -Math.cos(yaw);
+    const sideX = -Math.cos(yaw);
+    const sideZ = Math.sin(yaw);
+    const lat = i === 0 ? -1.9 : 1.9;
+    const behind = i === 0 ? 1.8 : 2.8;
+    formation.set(
+      player.root.position.x + backX * behind + sideX * lat,
+      0,
+      player.root.position.z + backZ * behind + sideZ * lat,
+    );
+    if (blockedAt(formation.x, formation.z, 0.4)) formation.set(player.root.position.x + backX * (behind + 1), 0, player.root.position.z + backZ * (behind + 1));
+    const bx = a.root.position.x;
+    const bz = a.root.position.z;
+    const gap = Math.hypot(formation.x - bx, formation.z - bz);
+    let moving = false;
+    if (gap > 1.0) moving = !moveToward(a, formation, gap > 6 ? 5.2 : gap > 2.5 ? 3.6 : 2.2, dt, 0.6);
+    else a.speed = 0;
+    if (a.losTimer <= 0) {
+      a.losTimer = 0.25 + fx() * 0.1;
+      let bestT: Soldier | null = null;
+      let bd = 30;
+      for (const e of enemies) {
+        if (!e.alive) continue;
+        const d = e.root.position.distanceTo(a.root.position);
+        if (d < bd && e.state === "combat" && los(a.root.position, 1.5, e.root.position, 1.3)) {
+          bd = d;
+          bestT = e;
+        }
+      }
+      a.target = bestT;
+    }
+    const t = a.target && a.target.alive ? a.target : null;
+    a.aiming = !!t;
+    if (t) {
+      a.aimPoint.set(t.root.position.x, 1.25, t.root.position.z);
+      a.faceYaw = Math.atan2(t.root.position.x - a.root.position.x, t.root.position.z - a.root.position.z);
+      if (!moving || a.speed < 3) {
+        if (a.burst === 0 && a.burstCd <= 0) a.burst = 3;
+        if (a.burst > 0 && a.shotCd <= 0 && Math.abs(wrapAngle(a.faceYaw - a.root.rotation.y)) < 0.4) {
+          allyFire(a, t);
+          a.burst--;
+          a.shotCd = 0.12;
+          if (a.burst === 0) a.burstCd = 1.3 + fx() * 1.2;
+        }
+      }
+    } else {
+      a.aimPoint.set(a.root.position.x + Math.sin(a.root.rotation.y) * 10, 1.3, a.root.position.z + Math.cos(a.root.rotation.y) * 10);
+    }
+    const fwd = (a.root.position.x - bx) * Math.sin(a.root.rotation.y) + (a.root.position.z - bz) * Math.cos(a.root.rotation.y);
+    animate(a, dt > 0 ? fwd / dt : 0);
+  }
+
+  // ------------------------------------------------------------ player
+  const wishV = new THREE.Vector3();
   function updatePlayer(dt: number) {
-    if (!player || !player.alive) return;
-    const f = camForward;
-    const r = camRight;
-    let mx = moveInput.x;
-    let mz = moveInput.y;
+    if (!player) return;
+    const p = player;
+    if (!p.alive) {
+      p.speed = 0;
+      return;
+    }
+    let mx = moveIn.x;
+    let mz = moveIn.y;
     if (keys.has("w") || keys.has("arrowup")) mz += 1;
     if (keys.has("s") || keys.has("arrowdown")) mz -= 1;
     if (keys.has("d") || keys.has("arrowright")) mx += 1;
@@ -1785,660 +2222,1376 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       mx /= len;
       mz /= len;
     }
-    const sprint = keys.has("shift");
-    const speed = sprint ? 6.1 : 3.5;
-    const dirX = f.x * mz + r.x * mx;
-    const dirZ = f.z * mz + r.z * mx;
-    const before = player.root.position.clone();
-    const nx = before.x + dirX * speed * dt;
-    const nz = before.z + dirZ * speed * dt;
-    if (!blockedAt(nx, before.z, 0.42)) player.root.position.x = nx;
-    if (!blockedAt(player.root.position.x, nz, 0.42)) player.root.position.z = nz;
-    const moved = player.root.position.distanceTo(before);
-    player.speed = dt > 0 ? moved / dt : 0;
-    if (moved > 0.001) {
-      faceTarget(player, player.root.position.clone().add(new THREE.Vector3(dirX, 0, dirZ)), dt);
-      if (stage === "tutorial" && tutStep === 0) {
-        tutMoved += moved;
-        if (tutMoved >= 1.2) {
-          tutStep = 1;
-          showTutorial();
-        }
-      }
-    } else if (len > 0.05) {
-      faceTarget(player, player.root.position.clone().add(new THREE.Vector3(dirX, 0, dirZ)), dt);
+    const stickSprint = mobile && Math.hypot(moveIn.x, moveIn.y) > 0.92;
+    const sprint = (sprintHeld || stickSprint) && mz > 0.3 && !ads && !firing;
+    const speed = ads ? 2.1 : sprint ? 6.0 : 3.4;
+    const fx2 = Math.sin(yaw);
+    const fz2 = Math.cos(yaw);
+    // forward = (sin yaw, cos yaw); right = (-cos yaw, sin yaw)
+    wishV.set((fx2 * mz - fz2 * mx) * speed, 0, (fz2 * mz + fx2 * mx) * speed);
+    p.vel.lerp(wishV, Math.min(1, dt * (len > 0.05 ? 14 : 18)));
+    const bx = p.root.position.x;
+    const bz = p.root.position.z;
+    moveBy(p, p.vel.x * dt, p.vel.z * dt);
+    const moved = Math.hypot(p.root.position.x - bx, p.root.position.z - bz);
+    p.speed = dt > 0 ? moved / dt : 0;
+    movedTotal += moved;
+    stepDist += moved;
+    if (stepDist > (sprint ? 1.25 : 0.85) && p.speed > 0.8) {
+      stepDist = 0;
+      audio.footstep(sprint);
     }
-    playClip(player.actor, player.speed > 4.4 ? "Run" : player.speed > 0.25 ? "Walk" : "Idle");
-    player.actor.mixer.update(dt);
+    const combat = ads || firing || lastShot < 1.4 || reloadT > 0;
+    p.aiming = combat && !sprint;
+    if (sprint || (!combat && p.speed > 0.4)) p.faceYaw = Math.atan2(p.vel.x, p.vel.z);
+    else if (combat) p.faceYaw = yaw;
+    p.aimPoint.copy(aimPoint);
+    const fwd = (p.root.position.x - bx) * Math.sin(p.root.rotation.y) + (p.root.position.z - bz) * Math.cos(p.root.rotation.y);
+    animate(p, dt > 0 ? fwd / dt : 0);
 
     fireCd = Math.max(0, fireCd - dt);
-    if (player.reloadCd > 0) {
-      player.reloadCd -= dt;
-      if (player.reloadCd <= 0) {
-        player.reloadCd = 0;
-        player.ammo = MAG;
+    lastShot += dt;
+    bloom = Math.max(0, bloom - dt * (firing ? 1.2 : 4.5));
+    updateReload(dt);
+    if (firing) playerFire();
+    lastHurt += dt;
+    if (mod.regen && lastHurt > REGEN_DELAY && p.hp < PLAYER_HP) p.hp = Math.min(PLAYER_HP, p.hp + REGEN_RATE * dt);
+    if (phase === 3) {
+      const onPad = p.root.position.distanceTo(EXTRACT) < 2.5;
+      if (onPad && !uplinkStarted) {
+        uplinkStarted = true;
+        banner("UPLINK STARTED", "HOLD THE PAD", "Enemy counter-attack incoming", true, 2.6);
+        audio.alarm();
+        spawnWave(WAVE3, true);
       }
-    }
-    if (firing && (stage === "playing" || stage === "tutorial")) playerFire();
-  }
-
-  function updateAllies(dt: number) {
-    for (const a of allies) {
-      if (!a.alive) {
-        a.deathTimer += dt;
-        a.actor.mixer.update(dt * 0.3);
-        continue;
-      }
-      a.fireCd = Math.max(0, a.fireCd - dt);
-      const back = new THREE.Vector3(-camForward.x, 0, -camForward.z);
-      const side = new THREE.Vector3(camRight.x, 0, camRight.z);
-      const offsetIndex = allies.indexOf(a);
-      const lateral = offsetIndex === 2 ? 0 : offsetIndex === 0 ? -1.5 : 1.5;
-      const behind = offsetIndex === 2 ? 2.6 : 1.4;
-      const dest = player
-        ? player.root.position
-            .clone()
-            .addScaledVector(back, behind)
-            .addScaledVector(side, lateral)
-        : SPAWN.clone();
-      const gap = a.root.position.distanceTo(dest);
-      if (gap > 0.7) {
-        moveAgent(a, dest, gap > 5 ? 6.2 : 4.0, dt, 0.6);
-        playClip(a.actor, a.speed > 4.4 ? "Run" : "Walk");
-      } else {
-        a.speed = 0;
-        playClip(a.actor, "Idle");
-      }
-      const near = nearestHostile(a.root.position, 30);
-      if (near.enemy && near.dist < 28 && hasLineOfSight(a.root.position, near.enemy.root.position)) {
-        faceTarget(a, near.enemy.root.position, dt);
-        if (a.speed < 0.1) allyFire(a, near.enemy);
-      }
-      a.actor.mixer.update(dt);
+      if (onPad) uplink = Math.min(1, uplink + dt / UPLINK_TIME);
+      if (uplink >= 1) finishMission(true);
     }
   }
 
-  function updateEnemies(dt: number) {
-    for (const e of enemies) {
-      if (!e.alive) {
-        e.deathTimer += dt;
-        e.actor.mixer.update(dt);
-        if (e.deathTimer > 1.8) {
-          e.root.position.y -= dt * 0.5;
-          for (const m of e.materials) {
-            const mm = m as THREE.Material & { transparent: boolean; opacity: number };
-            mm.transparent = true;
-            mm.opacity = Math.max(0, mm.opacity - dt * 0.45);
-          }
-          (e.ring.material as THREE.MeshBasicMaterial).opacity = Math.max(
-            0,
-            (e.ring.material as THREE.MeshBasicMaterial).opacity - dt * 0.6,
-          );
-        }
-        continue;
-      }
-      e.fireCd = Math.max(0, e.fireCd - dt);
-      const candidates: Soldier[] = [];
-      if (player?.alive) candidates.push(player);
-      for (const a of allies) if (a.alive) candidates.push(a);
-      let target: Soldier | null = null;
-      let bestDist = Infinity;
-      for (const c of candidates) {
-        const d = e.root.position.distanceTo(c.root.position);
-        if (d > 30 || d >= bestDist) continue;
-        if (!hasLineOfSight(e.root.position, c.root.position)) continue;
-        target = c;
-        bestDist = d;
-      }
-      // Keep the player alive long enough to learn the fight.
-      if (target && target.team === "player" && candidates.length > 1 && rng() < 0.5) {
-        const others = candidates.filter((c) => c !== target);
-        target = others[Math.floor(rng() * others.length)];
-      }
-      if (target) {
-        faceTarget(e, target.root.position, dt);
-        e.speed = 0;
-        playClip(e.actor, "Idle");
-        if (e.fireCd <= 0) enemyFire(e, target);
-      } else {
-        if (player && e.root.position.distanceTo(player.root.position) > 34) {
-          moveAgent(e, player.root.position, 2.4, dt, 2);
-        } else if (e.waitTime > 0) {
-          e.waitTime -= dt;
-          e.speed = 0;
-        } else {
-          const wp = e.patrol[e.patrolIndex % e.patrol.length] ?? e.root.position;
-          if (moveAgent(e, wp, 1.6, dt, 0.6)) {
-            e.patrolIndex += 1;
-            e.waitTime = 0.4 + rng() * 0.8;
-          }
-        }
-        playClip(e.actor, e.speed > 0.1 ? "Walk" : "Idle");
-      }
-      e.actor.mixer.update(dt);
-    }
-  }
-
-  function updateFx(dt: number) {
-    for (const t of tracers) {
-      if (t.life <= 0) continue;
-      t.life -= dt;
-      t.material.opacity = Math.max(0, t.life / 0.11) * 0.95;
-      if (t.life <= 0) t.mesh.visible = false;
-    }
-    for (const s of sparks) {
-      if (s.life <= 0) continue;
-      s.life -= dt;
-      const attr = s.points.geometry.getAttribute("position") as THREE.BufferAttribute;
-      for (let i = 0; i < s.vel.length; i++) {
-        attr.setXYZ(
-          i,
-          attr.getX(i) + s.vel[i].x * dt,
-          attr.getY(i) + s.vel[i].y * dt,
-          attr.getZ(i) + s.vel[i].z * dt,
-        );
-        s.vel[i].y -= 7 * dt;
-      }
-      attr.needsUpdate = true;
-      s.material.opacity = Math.max(0, s.life / 0.26);
-      if (s.life <= 0) s.points.visible = false;
-    }
-    for (const f of flashes) {
-      if (f.life <= 0) continue;
-      f.life -= dt;
-      f.material.opacity = Math.max(0, f.life / 0.085);
-      if (f.life <= 0) f.sprite.visible = false;
-    }
-    if (hitTimer > 0) {
-      hitTimer -= dt;
-      if (hitTimer <= 0) hitmark.style.display = "none";
-    }
-  }
-
-  function updateExtraction(dt: number) {
-    extractInner.rotation.y += dt * 0.5;
-    if (kills < HOSTILE_COUNT) {
-      (extractOuter.material as THREE.MeshBasicMaterial).opacity =
-        0.32 + Math.sin(elapsed * 1.3) * 0.06;
-      return;
-    }
-    const pulse = 0.72 + Math.sin(elapsed * 4) * 0.24;
-    (extractOuter.material as THREE.MeshBasicMaterial).opacity = pulse;
-    extractDashMat.opacity = 0.6 + Math.sin(elapsed * 4 + 0.8) * 0.3;
-    const s = 1 + Math.sin(elapsed * 2.4) * 0.035;
-    extractGroup.scale.set(s, 1, s);
-    if (player?.alive && player.root.position.distanceTo(EXTRACTION) < 2.3) endMission(true);
-  }
-
+  // ------------------------------------------------------------- camera
+  const camPivot = new THREE.Vector3();
+  const camDesired = new THREE.Vector3();
+  const camLook = new THREE.Vector3();
+  const camFrom = new THREE.Vector3();
+  let debugCam: { pos: THREE.Vector3; look: THREE.Vector3 } | null = null;
+  const camDir = new THREE.Vector3();
   function updateCamera(dt: number) {
     if (!player) return;
-    camForward.set(Math.sin(yaw), 0, Math.cos(yaw));
-    camRight.set(Math.cos(yaw), 0, -Math.sin(yaw));
-    adsBlend += ((ads ? 1 : 0) - adsBlend) * Math.min(1, dt * 11);
-    const shoulder = THREE.MathUtils.lerp(1.1, 0.36, adsBlend);
-    const back = THREE.MathUtils.lerp(4.2, 2.25, adsBlend) * Math.max(0.45, Math.cos(pitch));
-    const height = THREE.MathUtils.lerp(2.1, 1.86, adsBlend) + pitch * 1.6;
-    const head = player.root.position.clone().add(new THREE.Vector3(0, 1.5, 0));
-    const desired = player.root.position
-      .clone()
-      .addScaledVector(camForward, -back)
-      .addScaledVector(camRight, shoulder)
-      .add(new THREE.Vector3(0, height, 0));
-
-    // Pull in if the camera would clip cover/buildings.
-    if (coverMeshes.length) {
-      const delta = desired.clone().sub(head);
-      const dist = delta.length();
-      if (dist > 0.01) {
-        const ray = new THREE.Raycaster(head, delta.normalize(), 0, dist);
-        const hits = ray.intersectObjects(coverMeshes, false);
-        if (hits.length) desired.copy(head).addScaledVector(delta, Math.max(0.4, hits[0].distance - 0.3));
-      }
+    adsBlend += ((ads ? 1 : 0) - adsBlend) * Math.min(1, dt * 12);
+    shoulderBlend += (shoulder - shoulderBlend) * Math.min(1, dt * 9);
+    recoil *= Math.exp(-(firing ? 4 : 9) * dt);
+    recoilYaw *= Math.exp(-8 * dt);
+    const vp = THREE.MathUtils.clamp(pitch + recoil, -1.0, 0.85);
+    const vy = yaw + recoilYaw;
+    fwd3.set(Math.sin(vy) * Math.cos(vp), Math.sin(vp), Math.cos(vy) * Math.cos(vp));
+    camRight.set(-Math.cos(vy), 0, Math.sin(vy));
+    const sprinting = player.speed > 4.8;
+    const dist = THREE.MathUtils.lerp(3.1, 1.95, adsBlend) + (sprinting ? 0.35 : 0);
+    const sh = THREE.MathUtils.lerp(0.62, 0.5, adsBlend) * shoulderBlend;
+    const pr = player.root.position;
+    const deadLift = player.alive ? 0 : Math.min(1, deathTimer / 2);
+    camPivot.set(pr.x, pr.y + 1.55, pr.z);
+    camDesired.copy(camPivot).addScaledVector(camRight, sh).addScaledVector(fwd3, -(dist + deadLift * 2.5));
+    camDesired.y += 0.1 + deadLift * 2.2;
+    camFrom.copy(camPivot).addScaledVector(camRight, sh * 0.4);
+    camDir.subVectors(camDesired, camFrom);
+    const cd = camDir.length();
+    losRay.set(camFrom, camDir.divideScalar(cd));
+    losRay.far = cd;
+    const hit = losRay.intersectObjects(blockers, false)[0];
+    if (hit) camDesired.copy(camFrom).addScaledVector(camDir, Math.max(0.25, hit.distance - 0.25));
+    camera.position.lerp(camDesired, 1 - Math.exp(-30 * dt));
+    if (sprinting) {
+      const t = performance.now() / 1000;
+      camera.position.y += Math.sin(t * 13) * 0.025;
+      camera.position.addScaledVector(camRight, Math.cos(t * 6.5) * 0.02);
     }
-    camera.position.lerp(desired, 1 - Math.exp(-16 * dt));
     if (shake > 0.001) {
-      camera.position.x += (rng() - 0.5) * shake;
-      camera.position.y += (rng() - 0.5) * shake * 0.7;
-      camera.position.z += (rng() - 0.5) * shake;
-      shake *= Math.exp(-9 * dt);
+      camera.position.x += (fx() - 0.5) * shake * 0.5;
+      camera.position.y += (fx() - 0.5) * shake * 0.5;
+      shake *= Math.exp(-10 * dt);
     }
-    const aimPoint = head
-      .clone()
-      .addScaledVector(camForward, 7)
-      .add(new THREE.Vector3(0, 0.12 + pitch * 5.5, 0));
-    camera.lookAt(aimPoint);
-    const targetFov = THREE.MathUtils.lerp(60, 45, adsBlend);
-    if (Math.abs(camera.fov - targetFov) > 0.02) {
-      camera.fov = targetFov;
+    if (player.alive) camLook.copy(camera.position).addScaledVector(fwd3, 20);
+    else camLook.set(pr.x, pr.y + 0.4, pr.z);
+    camera.lookAt(camLook);
+    const fov = THREE.MathUtils.lerp(68, load.adsFov, adsBlend) + (sprinting ? 6 : 0);
+    if (Math.abs(camera.fov - fov) > 0.05) {
+      camera.fov += (fov - camera.fov) * Math.min(1, dt * 10);
       camera.updateProjectionMatrix();
     }
-    sun.target.position.set(player.root.position.x, 0, player.root.position.z);
-    sun.position.set(player.root.position.x - 24, 32, player.root.position.z + 12);
+    // What's under the crosshair (ignore anything between camera and player).
+    ray.set(camera.position, fwd3);
+    ray.far = 150;
+    const minD = camera.position.distanceTo(camPivot) * 0.9;
+    const target = ray.intersectObjects(collectTargets(), false).find((h) => h.distance > minD);
+    aimEnemy = !!target?.object.userData.unit;
+    if (target) aimPoint.copy(target.point);
+    else aimPoint.copy(camera.position).addScaledVector(fwd3, 150);
+    if (debugCam) {
+      camera.position.copy(debugCam.pos);
+      camera.lookAt(debugCam.look);
+    }
+    sun.position.set(pr.x + 18, 26, pr.z - 34);
+    sun.target.position.set(pr.x, 0, pr.z - 4);
   }
 
-  // ------------------------------------------------------------------- HUD
-  function updateMarker() {
-    if (!nearestSprite || !markerUpdater) return;
-    if (kills >= HOSTILE_COUNT || !player) {
-      nearestSprite.visible = false;
-      return;
+  function menuCamera(dt: number) {
+    menuTime += dt;
+    const t = menuTime * 0.05;
+    camera.position.set(Math.sin(t) * 3.5 + 2.5, 2.6 + Math.sin(t * 0.7) * 0.4, 33 - Math.sin(t * 0.6) * 2);
+    camLook.set(-1.5 + Math.sin(t * 0.8), 1.7, 12);
+    camera.lookAt(camLook);
+    if (Math.abs(camera.fov - 55) > 0.05) {
+      camera.fov = 55;
+      camera.updateProjectionMatrix();
     }
-    const near = nearestHostile(player.root.position, Infinity);
-    if (!near.enemy) {
-      nearestSprite.visible = false;
-      return;
-    }
-    nearestSprite.position.copy(near.enemy.root.position).add(new THREE.Vector3(0, 2.42, 0));
-    nearestSprite.visible = true;
-    const rounded = Math.round(near.dist);
-    if (rounded !== lastMarkerDist) {
-      lastMarkerDist = rounded;
-      markerUpdater(near.dist);
-    }
+    sun.position.set(18, 26, -10);
+    sun.target.position.set(0, 0, 20);
   }
 
-  function updateEdgeArrow() {
-    let target: THREE.Vector3 | null = null;
-    let label = "";
-    if (kills >= HOSTILE_COUNT) {
-      target = EXTRACTION.clone().add(new THREE.Vector3(0, 1.4, 0));
-      label = "EXTRACTION";
-    } else if (player) {
-      const near = nearestHostile(player.root.position, Infinity);
-      if (near.enemy) {
-        target = near.enemy.root.position.clone().add(new THREE.Vector3(0, 1.4, 0));
-        label = "HOSTILE";
-        const meters = Math.round(near.dist);
-        edgeLabel.textContent = `${label} ${meters}M`;
+  function aimAssist(dt: number) {
+    if (!mobile || !player?.alive || (!firing && !ads)) return;
+    let bestA = 0.09;
+    let best: Soldier | null = null;
+    for (const e of enemies) {
+      if (!e.alive || e.spotted <= 0) continue;
+      tmpV.set(e.root.position.x, 1.3, e.root.position.z).sub(camera.position).normalize();
+      const a = Math.acos(THREE.MathUtils.clamp(tmpV.dot(fwd3), -1, 1));
+      if (a < bestA) {
+        bestA = a;
+        best = e;
       }
     }
-    if (!target) {
-      edge.style.display = "none";
+    if (!best) return;
+    tmpV.set(best.root.position.x, 1.3, best.root.position.z).sub(camera.position);
+    const ty = Math.atan2(tmpV.x, tmpV.z);
+    const tp = Math.atan2(tmpV.y, Math.hypot(tmpV.x, tmpV.z));
+    const k = Math.min(1, dt * 3.2);
+    yaw += wrapAngle(ty - yaw) * k;
+    pitch += (tp - pitch) * k * 0.6;
+  }
+
+  // ------------------------------------------------------------ HUD
+  let medalQueue: string[] = [];
+  let medalTimer = 0;
+  function medal(id: string) {
+    const m = MEDALS[id];
+    if (!m || stage !== "playing") return;
+    runMedals[id] = (runMedals[id] ?? 0) + 1;
+    medalQueue.push(id);
+  }
+  function updateMedals(dt: number) {
+    medalTimer -= dt;
+    if (medalTimer > 0 || !medalQueue.length) {
+      if (medalTimer <= 0) hud.medal.classList.remove("on");
       return;
     }
-    if (label === "EXTRACTION" && player) {
-      edgeLabel.textContent = `${label} ${Math.round(player.root.position.distanceTo(EXTRACTION))}M`;
+    const id = medalQueue.shift()!;
+    const m = MEDALS[id];
+    hud.medal.innerHTML = `<i>${m.icon}</i><div><b>${m.name}</b><span>+${m.xp} XP</span></div>`;
+    hud.medal.classList.remove("on");
+    void hud.medal.offsetWidth;
+    hud.medal.classList.add("on");
+    audio.medal();
+    medalTimer = 1.7;
+  }
+
+  function rebuildMag() {
+    hud.magWrap.innerHTML = "";
+    hud.magTicks.length = 0;
+    for (let i = 0; i < load.mag; i++) {
+      const t = document.createElement("i");
+      hud.magWrap.appendChild(t);
+      hud.magTicks.push(t);
     }
-    const v = target.clone().project(camera);
-    const sx = (v.x * 0.5 + 0.5) * viewW;
-    const sy = (-v.y * 0.5 + 0.5) * viewH;
-    const margin = mobile ? 54 : 62;
-    const onScreen = v.z < 1 && sx > margin && sx < viewW - margin && sy > margin && sy < viewH - margin;
+    lastAmmo = -1;
+  }
+
+  function addPop(text: string, gold: boolean) {
+    const d = document.createElement("div");
+    d.textContent = text;
+    if (gold) d.className = "hs";
+    hud.pops.appendChild(d);
+    while (hud.pops.children.length > 4) hud.pops.firstElementChild?.remove();
+    window.setTimeout(() => d.remove(), 1150);
+  }
+
+  function feed(html: string, cls: string) {
+    const d = document.createElement("div");
+    d.innerHTML = html;
+    if (cls) d.className = cls;
+    hud.feed.prepend(d);
+    while (hud.feed.children.length > 5) hud.feed.lastElementChild?.remove();
+    window.setTimeout(() => (d.style.opacity = "0"), 4600);
+    window.setTimeout(() => d.remove(), 5100);
+  }
+
+  let bannerTimer = 0;
+  function banner(k: string, t: string, s: string, alert: boolean, dur: number) {
+    hud.bannerK.textContent = k;
+    hud.bannerT.textContent = t;
+    hud.bannerS.textContent = s;
+    hud.banner.classList.toggle("alert", alert);
+    hud.banner.classList.add("on");
+    bannerTimer = dur;
+  }
+
+  let hitTimer = 0;
+  function showHit(kind: "hit" | "hs" | "kill") {
+    hud.hit.className = "nx-hit" + (kind === "hit" ? "" : ` ${kind}`);
+    hud.hit.style.opacity = "1";
+    hitTimer = kind === "kill" ? 0.32 : 0.16;
+  }
+
+  function addDamageIndicator(from: THREE.Vector3) {
+    if (!player) return;
+    const d = hud.dmgs.find((x) => x.life <= 0) ?? hud.dmgs[0];
+    d.life = 1.4;
+    d.angle = Math.atan2(from.x - player.root.position.x, from.z - player.root.position.z);
+  }
+
+  function buildSquadHud() {
+    hud.squad.innerHTML = allies
+      .map((a) => `<div class="m" data-id="${a.id}"><span>${esc(a.name)}</span><div class="b"><i></i></div><span>OK</span></div>`)
+      .join("");
+  }
+
+  const headingOf = (y: number) => ((THREE.MathUtils.radToDeg(Math.PI - y) % 360) + 360) % 360;
+
+  function updateCompass() {
+    const w = hud.compassWidth();
+    const pxPerDeg = w / 130;
+    const heading = headingOf(yaw);
+    for (const t of hud.compassTicks) {
+      const d = ((t.deg - heading + 540) % 360) - 180;
+      if (Math.abs(d) > 68) {
+        t.el.style.display = "none";
+        continue;
+      }
+      t.el.style.display = "";
+      t.el.style.left = `${w / 2 + d * pxPerDeg}px`;
+    }
+    hud.heading.textContent = `${String(Math.round(heading) % 360).padStart(3, "0")}°`;
+    let i = 0;
+    const pip = (pos: THREE.Vector3, cls: string) => {
+      if (i >= hud.pips.length || !player) return;
+      const by = Math.atan2(pos.x - player.root.position.x, pos.z - player.root.position.z);
+      const d = ((headingOf(by) - heading + 540) % 360) - 180;
+      const el = hud.pips[i++];
+      el.className = `pip ${cls}`;
+      el.style.display = "";
+      el.style.left = `${w / 2 + THREE.MathUtils.clamp(d, -62, 62) * pxPerDeg}px`;
+    };
+    for (const e of enemies) if (e.alive && e.spotted > 0) pip(e.root.position, "");
+    for (const a of allies) pip(a.root.position, "ally");
+    if (phase === 3) pip(EXTRACT, "obj");
+    for (; i < hud.pips.length; i++) hud.pips[i].style.display = "none";
+  }
+
+  const projV = new THREE.Vector3();
+  function updateObjectiveMarker() {
+    if (phase !== 3 || !player || stage !== "playing") {
+      hud.edge.style.display = "none";
+      hud.world.style.display = "none";
+      return;
+    }
+    projV.set(EXTRACT.x, 2.2, EXTRACT.z).project(camera);
+    const sx = (projV.x * 0.5 + 0.5) * viewW;
+    const sy = (-projV.y * 0.5 + 0.5) * viewH;
+    const m = 60;
+    const dist = Math.round(player.root.position.distanceTo(EXTRACT));
+    const onScreen = projV.z < 1 && sx > m && sx < viewW - m && sy > m && sy < viewH - m;
     if (onScreen) {
-      edge.style.display = "none";
+      hud.edge.style.display = "none";
+      hud.world.style.display = dist < 3 ? "none" : "block";
+      hud.world.style.left = `${sx}px`;
+      hud.world.style.top = `${sy}px`;
+      hud.worldLabel.textContent = `UPLINK ${dist}M`;
       return;
     }
+    hud.world.style.display = "none";
     let dx = sx - viewW / 2;
     let dy = sy - viewH / 2;
-    if (v.z > 1) {
+    if (projV.z > 1) {
       dx = -dx;
       dy = -dy;
     }
-    if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) dy = -1;
-    const maxX = viewW / 2 - margin;
-    const maxY = viewH / 2 - margin;
-    const t = Math.min(maxX / Math.max(0.001, Math.abs(dx)), maxY / Math.max(0.001, Math.abs(dy)));
-    edge.style.display = "block";
-    edge.style.left = `${viewW / 2 + dx * t}px`;
-    edge.style.top = `${viewH / 2 + dy * t}px`;
-    edgeArrow.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
+    const k = Math.min((viewW / 2 - m) / Math.max(1e-3, Math.abs(dx)), (viewH / 2 - m) / Math.max(1e-3, Math.abs(dy)));
+    hud.edge.style.display = "block";
+    hud.edge.style.left = `${viewW / 2 + dx * k}px`;
+    hud.edge.style.top = `${viewH / 2 + dy * k}px`;
+    hud.edgeArrow.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
+    hud.edgeLabel.textContent = `UPLINK ${dist}M`;
   }
 
-  function scoreNow() {
-    const accuracy = shots > 0 ? hits / shots : 0;
-    return kills * 150 + Math.round(accuracy * 300) + (success ? Math.max(0, 600 - Math.floor(elapsed) * 4) : 0);
-  }
-
-  function updateHud() {
-    timeEl.textContent = formatTime(elapsed);
-    scoreEl.textContent = String(ended ? score : scoreNow());
-    const alive = HOSTILE_COUNT - kills;
-    objectiveEl.classList.toggle("hot", alive === 0);
-    if (alive > 0) {
-      objectiveEl.innerHTML = `HOSTILES ${alive}/${HOSTILE_COUNT}<small>RANGE ${RANGE}M</small>`;
-      const sub = objectiveEl.querySelector("small") as HTMLElement | null;
-      if (sub) {
-        sub.textContent = player
-          ? `NEAREST ${Math.round(nearestHostile(player.root.position, Infinity).dist)}M`
-          : `RANGE ${RANGE}M`;
-      }
+  let lastHp = -1;
+  let lastAmmo = -1;
+  let lastReserve = -1;
+  function updateHud(force = false) {
+    if (!player) return;
+    const hp = Math.max(0, Math.round(player.hp));
+    if (hp !== lastHp || force) {
+      lastHp = hp;
+      hud.hp.innerHTML = `${hp}<small>HP</small>`;
+      hud.hpCells.forEach((c, i) => {
+        c.style.transform = `scaleX(${THREE.MathUtils.clamp(hp / 10 - i, 0, 1)})`;
+      });
+      hud.vit.classList.toggle("low", hp < 35);
+    }
+    if (ammo !== lastAmmo || reserve !== lastReserve || force) {
+      lastAmmo = ammo;
+      lastReserve = reserve;
+      hud.mag.textContent = String(ammo).padStart(2, "0");
+      hud.reserve.textContent = String(reserve);
+      hud.magTicks.forEach((t, i) => t.classList.toggle("off", i >= ammo));
+      hud.wpn.classList.toggle("empty", ammo === 0);
+    }
+    hud.wpn.classList.toggle("reloading", reloadT > 0);
+    if (reloadT > 0) hud.reloadFill.style.width = `${(1 - reloadT / reloadDur) * 100}%`;
+    hud.keyHint.textContent =
+      reloadT > 0 ? "RELOADING…" : ammo <= 8 && reserve > 0 ? "▲ LOW AMMO — R" : reserve === 0 && ammo <= 8 ? "▲ NO RESERVE — FIND AMMO" : mobile ? "" : "R RELOAD · Q SHOULDER";
+    const left = hostilesLeft();
+    hud.obj.classList.toggle("alert", phase === 2 || (phase === 3 && uplinkStarted));
+    if (phase < 3) {
+      hud.objState.textContent = pendingWave ? "INBOUND" : "ACTIVE";
+      hud.objSub.textContent = pendingWave ? "REINFORCEMENTS ARRIVING…" : `HOSTILES REMAINING · ${left}`;
+      hud.objBar.style.display = "none";
     } else {
-      objectiveEl.innerHTML = `EXTRACTION OPEN<small>REACH THE PAD</small>`;
-      if (player) {
-        (objectiveEl.querySelector("small") as HTMLElement).textContent =
-          `PAD ${Math.round(player.root.position.distanceTo(EXTRACTION))}M`;
-      }
+      const onPad = player.root.position.distanceTo(EXTRACT) < 2.5;
+      hud.objState.textContent = uplinkStarted ? `${Math.round(uplink * 100)}%` : "GO";
+      hud.objSub.textContent = uplinkStarted
+        ? onPad
+          ? "UPLOADING — STAY ON THE PAD"
+          : "UPLINK PAUSED — RETURN TO PAD"
+        : `MOVE TO UPLINK PAD · ${Math.round(player.root.position.distanceTo(EXTRACT))}M`;
+      hud.objBar.style.display = "block";
+      hud.objBarFill.style.width = `${uplink * 100}%`;
     }
-    if (player) {
-      const hp = Math.max(0, Math.round(player.hp));
-      hpNumEl.textContent = `${hp} / ${PLAYER_HP}`;
-      hpFillEl.style.width = `${Math.max(0, player.hp)}%`;
-      hpBar.classList.toggle("low", player.hp < 35);
-      ammoEl.innerHTML = `${String(player.ammo).padStart(2, "0")}<em>/${MAG}</em>`;
+    for (const a of allies) {
+      const row = hud.squad.querySelector(`[data-id="${a.id}"]`) as HTMLElement | null;
+      if (!row) continue;
+      row.classList.toggle("down", a.down);
+      (row.querySelector(".b i") as HTMLElement).style.width = `${(a.hp / a.maxHp) * 100}%`;
+      (row.lastElementChild as HTMLElement).textContent = a.down ? "DOWN" : a.target ? "ENGAGE" : "OK";
     }
-    reticle.classList.toggle("ads", adsBlend > 0.55);
   }
 
-  // ----------------------------------------------------------------- input
-  const canvas = renderer.domElement;
-  let documentedLock = false;
+  function updateFastHud(dt: number) {
+    const sp = spreadNow();
+    const gap = Math.max(4, (Math.tan(sp) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * (viewH / 2));
+    hud.cross.style.setProperty("--g", `${gap.toFixed(1)}px`);
+    hud.cross.classList.toggle("enemy", aimEnemy);
+    hud.cross.classList.toggle("hide", !!player && (!player.alive || (player.speed > 4.8 && !ads)));
+    hud.scope.style.opacity = String(adsBlend * 0.9);
+    if (hitTimer > 0) {
+      hitTimer -= dt;
+      if (hitTimer <= 0) hud.hit.style.opacity = "0";
+    }
+    for (const d of hud.dmgs) {
+      if (d.life <= 0) {
+        d.el.style.opacity = "0";
+        continue;
+      }
+      d.life -= dt;
+      const rel = THREE.MathUtils.radToDeg(wrapAngle(yaw - d.angle));
+      d.el.style.transform = `rotate(${rel}deg)`;
+      d.el.style.opacity = String(Math.min(1, d.life / 0.6));
+    }
+    damageFlash = Math.max(0, damageFlash - dt * 1.4);
+    const low = player?.alive ? THREE.MathUtils.clamp((40 - player.hp) / 40, 0, 1) : 0;
+    hud.blood.style.opacity = String(Math.min(1, damageFlash * 0.9 + low * 0.55));
+    audio.setLowHp(low);
+    if (grade) {
+      grade.uniforms.uDamage.value = damageFlash;
+      grade.uniforms.uLowHp.value = low;
+      grade.uniforms.uAds.value = adsBlend;
+    }
+    if (bannerTimer > 0) {
+      bannerTimer -= dt;
+      if (bannerTimer <= 0) hud.banner.classList.remove("on");
+    }
+    let near: Soldier | null = null;
+    let far: Soldier | null = null;
+    if (player?.alive) {
+      for (const a of allies) {
+        if (!a.down) continue;
+        const d = a.root.position.distanceTo(player.root.position);
+        if (d < 1.9) near = a;
+        else if (d < 8) far = a;
+      }
+    }
+    if (near) {
+      hud.prompt.style.display = "block";
+      hud.promptText.textContent = `REVIVING ${near.name}`;
+      hud.promptFill.style.width = `${(near.revive / 2.4) * 100}%`;
+    } else if (far) {
+      hud.prompt.style.display = "block";
+      hud.promptText.textContent = `${far.name} IS DOWN — MOVE CLOSE TO REVIVE`;
+      hud.promptFill.style.width = "0%";
+    } else hud.prompt.style.display = "none";
+    updateHints(dt);
+  }
 
-  function requestLock() {
-    // Eğitim sırasında kilitlenirse alttaki butonlara tıklanamaz
-    if (mobile || documentedLock || stage === "tutorial" || stage === "briefing") return;
+  function setHint(html: string) {
+    if (hud.hint.innerHTML !== html) hud.hint.innerHTML = html;
+    hud.hint.classList.toggle("on", !!html);
+  }
+
+  function updateHints(dt: number) {
+    if (hintStep >= 99 || stage !== "playing") return;
+    hintTimer += dt;
+    const k = (s: string) => `<kbd>${s}</kbd>`;
+    if (hintStep === 0) {
+      setHint(
+        mobile
+          ? `<span>LEFT THUMB · MOVE</span><span>RIGHT THUMB · LOOK</span>`
+          : `<span>${k("W")}${k("A")}${k("S")}${k("D")} MOVE</span><span>${k("SHIFT")} SPRINT</span><span>${k("MOUSE")} LOOK</span>`,
+      );
+      if (movedTotal > 3) {
+        hintStep = 1;
+        hintTimer = 0;
+      }
+    } else if (hintStep === 1) {
+      setHint(
+        mobile
+          ? `<span>AIM · TOGGLE</span><span>FIRE · HOLD &amp; DRAG</span>`
+          : `<span>${k("RMB")} AIM</span><span>${k("LMB")} FIRE</span><span>HEADSHOTS KILL INSTANTLY</span>`,
+      );
+      if (shotsFired > 4) {
+        hintStep = 2;
+        hintTimer = 0;
+      }
+    } else if (hintStep === 2) {
+      setHint(
+        mobile
+          ? `<span>R · RELOAD</span><span>⇄ · SWAP SHOULDER</span>`
+          : `<span>${k("R")} RELOAD</span><span>${k("Q")} SWAP SHOULDER</span><span>${k("P")} PAUSE</span>`,
+      );
+      if (hintTimer > 6) {
+        hintStep = 99;
+        setHint("");
+        save(SEEN_KEY, "1");
+      }
+    }
+  }
+
+  // ------------------------------------------------------------ menus
+  function controlsHtml() {
+    if (mobile) {
+      return `<div class="nx-ctrl" style="display:grid"><div>MOVE<b>LEFT THUMB</b></div><div>LOOK<b>RIGHT THUMB</b></div>
+        <div>FIRE<b>HOLD + DRAG</b></div><div>AIM<b>TOGGLE</b></div></div>`;
+    }
+    return `<div class="nx-ctrl"><div>MOVE<b>W A S D</b></div><div>SPRINT<b>SHIFT</b></div><div>AIM<b>RIGHT MOUSE</b></div>
+      <div>FIRE<b>LEFT MOUSE</b></div><div>RELOAD<b>R</b></div><div>SHOULDER<b>Q</b></div><div>PAUSE<b>P / ESC</b></div><div>FULLSCREEN<b>F</b></div><div>SOUND<b>M</b></div></div>`;
+  }
+
+  function settingsHtml() {
+    return `<div class="nx-set"><label><span>SENSITIVITY</span><input type="range" min="0.3" max="2.5" step="0.05" value="${settings.sens}" data-set="sens"><span>${settings.sens.toFixed(2)}</span></label>
+      <label><span>VOLUME</span><input type="range" min="0" max="1" step="0.05" value="${settings.vol}" data-set="vol"><span>${Math.round(settings.vol * 100)}</span></label></div>`;
+  }
+
+  function bindSettings() {
+    hud.overlay.querySelectorAll<HTMLInputElement>("input[data-set]").forEach((inp) => {
+      inp.addEventListener("input", () => {
+        const v = parseFloat(inp.value);
+        const key = inp.dataset.set as "sens" | "vol";
+        settings[key] = v;
+        (inp.nextElementSibling as HTMLElement).textContent = key === "vol" ? String(Math.round(v * 100)) : v.toFixed(2);
+        if (key === "vol") {
+          settings.muted = v === 0;
+          audio.setVolume(v);
+          syncMute();
+        }
+        save(SETTINGS_KEY, settings);
+      });
+    });
+  }
+
+  function bindButtons(map: Record<string, () => void>) {
+    hud.overlay.querySelectorAll<HTMLElement>("[data-go]").forEach((b) => {
+      b.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        audio.ensure();
+        audio.ui();
+        map[b.dataset.go ?? ""]?.();
+      });
+    });
+  }
+
+  function showMenu() {
+    stage = "menu";
+    menuTime = 0;
+    hud.root.dataset.mode = "menu";
+    hud.overlay.className = "nx-ov menu on";
+    hud.overlay.innerHTML = `<div class="nx-col">
+      <div class="nx-kick">PLAYVERSE // TACTICAL SIMULATION</div>
+      <div class="nx-h1">NEXUS <span>2100</span></div>
+      <div class="nx-sub">Operation Nightfall. District 07 has gone dark. Lead a three-operator fireteam down a rain-soaked megacity street, break the hostile cell and upload the evidence before their counter-attack lands.</div>
+      <div class="nx-phases">
+        <div><b>01</b><span>CLEAR THE STREET<small>Six hostiles on patrol. Strike before they raise the alarm.</small></span></div>
+        <div><b>02</b><span>REPEL REINFORCEMENTS<small>A second squad pushes in from the north end and the side alley.</small></span></div>
+        <div><b>03</b><span>HOLD THE UPLINK<small>Stand on the pad for ${UPLINK_TIME}s while they counter-attack.</small></span></div>
+      </div>
+      ${rankHtml()}
+      ${dailyCardHtml()}
+      <div class="nx-actions"><button type="button" class="nx-btn" data-go="deploy">DEPLOY ▸</button>
+        <button type="button" class="nx-btn ghost" data-go="loadout">LOADOUT</button>
+        <button type="button" class="nx-btn ghost" data-go="board">LEADERBOARD</button>
+        <button type="button" class="nx-btn ghost" data-go="settings">SETTINGS</button>
+        <span class="nx-best">BEST · <b>${best.toLocaleString("en-US")}</b></span></div>
+      <div class="nx-setwrap" style="display:none">${settingsHtml()}${controlsHtml()}</div>
+    </div>`;
+    bindSettings();
+    bindButtons({
+      deploy: () => deploy("op"),
+      daily: () => deploy("daily"),
+      board: () => showBoard("daily"),
+      loadout: () => showLoadout(),
+      settings: () => {
+        const w = hud.overlay.querySelector(".nx-setwrap") as HTMLElement;
+        w.style.display = w.style.display === "none" ? "block" : "none";
+      },
+    });
+  }
+
+  function deploy(m: Mode) {
+    if (m !== mode) {
+      mode = m;
+      resetMission();
+    }
+    startPlay();
+  }
+
+  function dailyCardHtml() {
+    const d = dailyOf(todayUTC());
+    return `<button type="button" class="nx-daily" data-go="daily"><div class="k"><b>DAILY OPS</b><span>${d.date} · UTC</span></div>
+      <div class="t">${d.mod.name}</div><div class="s">${esc(d.mod.desc)} Same layout for everyone — global ranking.</div>
+      <div class="go">PLAY DAILY ▸</div></button>`;
+  }
+
+  async function fetchBoard(board: "daily" | "all"): Promise<BoardResp | null> {
     try {
-      const p = canvas.requestPointerLock();
-      if (p && typeof (p as Promise<void>).catch === "function") {
-        void (p as Promise<void>).catch(() => undefined);
-      }
+      const r = await fetch(`/api/scores?board=${board}&date=${todayUTC()}&id=${pid}`, { cache: "no-store" });
+      if (!r.ok) return null;
+      return (await r.json()) as BoardResp;
     } catch {
-      /* drag fallback remains available */
+      return null;
     }
   }
 
-  function interactive() {
-    return (stage === "playing" || stage === "tutorial") && !ended;
+  function boardRowsHtml(b: BoardResp | null) {
+    if (!b) return `<div class="nx-tiny">LEADERBOARD OFFLINE</div>`;
+    if (!b.top.length) return `<div class="nx-tiny">NO SCORES YET — BE THE FIRST</div>`;
+    const rows = b.top
+      .map(
+        (r, i) =>
+          `<div class="${r.you ? "you" : ""}"><span class="n">${String(i + 1).padStart(2, "0")}</span><span class="nm">${esc(r.name)}</span><b>${r.score.toLocaleString("en-US")}</b></div>`,
+      )
+      .join("");
+    const you =
+      b.you && b.you.rank > 10
+        ? `<div class="you sep"><span class="n">${b.you.rank}</span><span class="nm">${esc(getNickname() || "YOU")}</span><b>${b.you.score.toLocaleString("en-US")}</b></div>`
+        : "";
+    return `<div class="nx-lb">${rows}${you}</div><div class="nx-tiny">${b.total.toLocaleString("en-US")} OPERATORS RANKED</div>`;
   }
 
-  function applyLook(dx: number, dy: number) {
-    yaw -= dx * 0.0022;
-    pitch = THREE.MathUtils.clamp(pitch - dy * 0.0019, -0.3, 0.55);
+  function showBoard(tab: "daily" | "all") {
+    const back = stage === "debrief" ? "debrief" : "menu";
+    hud.overlay.className = back === "debrief" ? "nx-ov dim on" : "nx-ov menu on";
+    hud.overlay.innerHTML = `<div class="nx-col"><div class="nx-kick">GLOBAL NETWORK</div>
+      <div class="nx-h2" style="text-align:left">LEADERBOARD</div>
+      <div class="nx-tabs"><button type="button" data-go="tdaily" class="${tab === "daily" ? "on" : ""}">DAILY · ${todayUTC()}</button>
+        <button type="button" data-go="tall" class="${tab === "all" ? "on" : ""}">ALL-TIME · OPERATION</button></div>
+      <div class="nx-lbwrap"><div class="nx-tiny">CONNECTING…</div></div>
+      <div class="nx-actions"><button type="button" class="nx-btn ghost" data-go="back">BACK</button></div></div>`;
+    bindButtons({
+      tdaily: () => showBoard("daily"),
+      tall: () => showBoard("all"),
+      back: () => (back === "debrief" ? showDebriefAgain() : showMenu()),
+    });
+    void fetchBoard(tab).then((b) => {
+      const w = hud.overlay.querySelector(".nx-lbwrap");
+      if (w) w.innerHTML = boardRowsHtml(b);
+    });
   }
 
-  function onPointerDown(ev: PointerEvent) {
-    if (!interactive()) return;
-    ensureAudio();
-    if (stage === "tutorial" && tutStep === 1 && ev.button === 0) {
-      tutStep = 2;
-      showTutorial();
+  // Leaderboard submission (runs after the debrief is drawn).
+  let lastRun: { score: number; time: number; kills: number; board: Mode } | null = null;
+  let debriefHtml = "";
+  function showDebriefAgain() {
+    hud.overlay.className = "nx-ov dim on";
+    hud.overlay.innerHTML = debriefHtml;
+    bindDebrief();
+    void submitRun(false);
+  }
+
+  async function submitRun(fresh: boolean) {
+    const slot = hud.overlay.querySelector(".nx-submit");
+    if (!slot || !lastRun) return;
+    const name = getNickname();
+    if (!name) {
+      slot.innerHTML = `<div class="nx-namebox"><span>CALLSIGN FOR THE GLOBAL BOARD</span>
+        <div><input maxlength="16" placeholder="e.g. NOVA-7" /><button type="button" class="nx-btn sm">SUBMIT</button></div></div>`;
+      const inp = slot.querySelector("input") as HTMLInputElement;
+      const btn = slot.querySelector("button") as HTMLButtonElement;
+      const go = () => {
+        const v = inp.value.replace(/[^\p{L}\p{N} _.\-]/gu, "").trim();
+        if (v.length < 2) {
+          inp.focus();
+          return;
+        }
+        setNickname(v);
+        void submitRun(true);
+      };
+      btn.addEventListener("click", go);
+      inp.addEventListener("keydown", (ev) => {
+        ev.stopPropagation();
+        if (ev.key === "Enter") go();
+      });
+      return;
     }
+    const label = lastRun.board === "daily" ? "DAILY" : "GLOBAL";
+    if (!fresh) {
+      if (lastRunResult) slot.innerHTML = lastRunResult;
+      return;
+    }
+    slot.innerHTML = `<div class="nx-tiny">UPLOADING TO ${label} BOARD…</div>`;
+    try {
+      const r = await fetch("/api/scores", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: pid, name, ...lastRun, date: todayUTC() }),
+      });
+      const j = (await r.json()) as { rank?: number; total?: number; best?: number; error?: string };
+      lastRunResult = r.ok
+        ? `<div class="nx-rankres"><b>#${j.rank}</b><span>${label} RANK · OF ${j.total}</span><em>AS ${esc(name)}</em>
+            <button type="button" class="nx-btn ghost sm" data-go="board">VIEW BOARD</button></div>`
+        : `<div class="nx-tiny">SCORE NOT RANKED (${esc(j.error ?? "error")})</div>`;
+    } catch {
+      lastRunResult = `<div class="nx-tiny">LEADERBOARD OFFLINE</div>`;
+    }
+    const cur = hud.overlay.querySelector(".nx-submit");
+    if (cur) {
+      cur.innerHTML = lastRunResult;
+      cur.querySelector('[data-go="board"]')?.addEventListener("click", () => {
+        audio.ui();
+        showBoard(lastRun?.board === "daily" ? "daily" : "all");
+      });
+    }
+    debriefHtml = hud.overlay.innerHTML;
+  }
+  let lastRunResult = "";
+
+  function rankHtml() {
+    const r = rankOf(prog.xp);
+    const stars = STARS.map((st) => `<i class="${prog.stars[st.id] ? "on" : ""}" title="${esc(st.label)}">★</i>`).join("");
+    return `<div class="nx-rank"><div class="badge">${r.index + 1}</div><div class="info">
+      <div class="top"><b>${r.name}</b><span>${r.next ? `${r.into.toLocaleString("en-US")} / ${r.span.toLocaleString("en-US")} XP` : "MAX RANK"}</span></div>
+      <div class="xp"><i style="width:${Math.round(r.pct * 100)}%"></i></div>
+      <div class="bot"><span class="st">${stars}</span><span>${r.next ? `NEXT · ${r.next}` : ""}</span></div></div></div>`;
+  }
+
+  function showLoadout() {
+    const r = rankOf(prog.xp);
+    const slotName: Record<Slot, string> = { optic: "OPTIC", muzzle: "MUZZLE", mag: "MAGAZINE", visor: "VISOR" };
+    const rows = (Object.keys(ITEMS) as Slot[])
+      .map((slot) => {
+        const opts = ITEMS[slot]
+          .map((it) => {
+            const locked = it.rank > r.index;
+            const on = equipped(slot) === it.id;
+            const sw = slot === "visor" ? `<em style="background:#${(VISOR_COLORS[it.id] ?? 0).toString(16).padStart(6, "0")}"></em>` : "";
+            return `<button type="button" class="nx-opt${on ? " on" : ""}${locked ? " lock" : ""}" data-slot="${slot}" data-item="${it.id}" ${locked ? "disabled" : ""}>
+              ${sw}<b>${it.name}</b><span>${locked ? `🔒 RANK ${it.rank + 1} · ${RANKS[it.rank].name}` : esc(it.desc)}</span></button>`;
+          })
+          .join("");
+        return `<div class="nx-slot"><div class="k">${slotName[slot]}</div><div class="opts">${opts}</div></div>`;
+      })
+      .join("");
+    hud.overlay.className = "nx-ov menu on";
+    hud.overlay.innerHTML = `<div class="nx-col wide"><div class="nx-kick">ARMORY // MK-18 CARBINE</div>
+      <div class="nx-h2" style="text-align:left">LOADOUT</div>
+      ${rankHtml()}
+      <div class="nx-slots">${rows}</div>
+      <div class="nx-actions"><button type="button" class="nx-btn" data-go="deploy">DEPLOY ▸</button>
+        <button type="button" class="nx-btn ghost" data-go="back">BACK</button></div></div>`;
+    hud.overlay.querySelectorAll<HTMLButtonElement>(".nx-opt").forEach((b) => {
+      b.addEventListener("click", () => {
+        if (b.disabled) return;
+        audio.ensure();
+        audio.ui();
+        prog.equip[b.dataset.slot as Slot] = b.dataset.item ?? "";
+        saveProgress(prog);
+        // respawn the squad so the new carbine/visor shows in the menu backdrop
+        resetMission();
+        showLoadout();
+      });
+    });
+    bindButtons({ deploy: () => deploy("op"), back: () => showMenu() });
+  }
+
+  function startPlay() {
+    audio.ensure();
+    audio.startAmbient();
+    hud.overlay.className = "nx-ov";
+    hud.overlay.innerHTML = "";
+    hud.root.dataset.mode = "play";
+    stage = "playing";
+    hintTimer = 0;
+    camera.fov = 68;
+    camera.updateProjectionMatrix();
+    if (mode === "daily") {
+      const d = dailyOf(todayUTC());
+      banner(`DAILY OPS · ${d.date}`, d.mod.name, d.mod.desc, false, 3.4);
+    } else banner("OPERATION NIGHTFALL", "CLEAR THE STREET", "Six hostiles patrolling District 07", false, 3);
+    requestLock();
+  }
+
+  function pause() {
+    if (stage !== "playing") return;
+    stage = "paused";
+    firing = false;
+    ads = false;
+    keys.clear();
+    sprintHeld = false;
+    audio.pause(true);
+    hud.overlay.className = "nx-ov dim on";
+    hud.overlay.innerHTML = `<div class="nx-center"><div class="nx-kick">SIMULATION PAUSED</div>
+      <div class="nx-h2">OPERATION NIGHTFALL</div>
+      <div class="nx-tiny">PHASE ${phase}/3 · ${formatTime(elapsed)} · ${kills} KILLS</div>
+      <div style="max-width:360px;margin:18px auto 0;text-align:left">${settingsHtml()}</div>
+      <div class="nx-actions" style="margin-top:22px"><button type="button" class="nx-btn" data-go="resume">RESUME</button>
+      <button type="button" class="nx-btn ghost" data-go="restart">RESTART</button>
+      <button type="button" class="nx-btn ghost" data-go="menu">MAIN MENU</button></div></div>`;
+    bindSettings();
+    bindButtons({
+      resume: () => resume(),
+      restart: () => {
+        audio.pause(false);
+        resetMission();
+        startPlay();
+      },
+      menu: () => {
+        audio.pause(false);
+        resetMission();
+        showMenu();
+      },
+    });
+  }
+
+  function resume() {
+    if (stage !== "paused") return;
+    audio.pause(false);
+    hud.overlay.className = "nx-ov";
+    hud.overlay.innerHTML = "";
+    stage = "playing";
+    last = performance.now();
+    requestLock();
+  }
+
+  function finalScore() {
+    const accuracy = shots > 0 ? hits / shots : 0;
+    const accB = Math.round(accuracy * 400);
+    const timeB = success ? Math.max(0, 900 - Math.floor(elapsed) * 3) : 0;
+    const squadB = success ? allies.filter((a) => !a.down).length * 150 : 0;
+    return { accuracy, accB, timeB, squadB, total: bonus + accB + timeB + squadB };
+  }
+
+  function showDebrief() {
+    stage = "debrief";
+    hud.root.dataset.mode = "menu";
+    if (document.pointerLockElement === canvas) document.exitPointerLock();
+    const f = finalScore();
+    const total = f.total;
+    const isBest = total > best;
+    if (isBest) best = total;
+    const g = !success ? "F" : total >= 3400 ? "S" : total >= 2800 ? "A" : total >= 2200 ? "B" : total >= 1500 ? "C" : "D";
+    hooks.onScore(total);
+    hooks.onGameOver(
+      total,
+      [
+        { label: "RESULT", value: success ? "SUCCESS" : "FAILED" },
+        { label: "GRADE", value: g },
+        { label: "KILLS", value: String(kills) },
+        { label: "TIME", value: formatTime(elapsed) },
+      ],
+      { ownScreen: true },
+    );
+    save(SEEN_KEY, "1");
+    hintStep = 99;
+    setHint("");
+    // --- progression
+    const starHit: Record<string, boolean> = {
+      complete: success,
+      fast: success && elapsed < 240,
+      squad: success && !allyWentDown,
+    };
+    let newStars = 0;
+    for (const st of STARS) {
+      if (starHit[st.id] && !prog.stars[st.id]) {
+        prog.stars[st.id] = true;
+        newStars++;
+      }
+    }
+    let medalXp = 0;
+    for (const [id, n] of Object.entries(runMedals)) {
+      medalXp += (MEDALS[id]?.xp ?? 0) * n;
+      prog.medals[id] = (prog.medals[id] ?? 0) + n;
+    }
+    const gained = Math.round(total * (success ? 1 : 0.5)) + medalXp + newStars * 300;
+    const before = rankOf(prog.xp);
+    prog.xp += gained;
+    prog.runs += 1;
+    if (success) prog.wins += 1;
+    saveProgress(prog);
+    const after = rankOf(prog.xp);
+    const unlocked = unlockedBetween(before.index, after.index);
+    const starsHtml = STARS.map(
+      (st) =>
+        `<div class="${starHit[st.id] ? "on" : prog.stars[st.id] ? "had" : ""}"><i>★</i><span>${esc(st.label)}</span></div>`,
+    ).join("");
+    const medalsHtml = Object.entries(runMedals)
+      .map(([id, n]) => `<span><i>${MEDALS[id].icon}</i>${MEDALS[id].name}${n > 1 ? ` ×${n}` : ""}</span>`)
+      .join("");
+    const squadAlive = allies.filter((a) => !a.down).length + (player?.alive ? 1 : 0);
+    hud.overlay.className = "nx-ov dim on";
+    hud.overlay.innerHTML = `<div class="nx-center deb">
+      <div class="nx-kick ${success ? "" : "r"}">${success ? "MISSION COMPLETE" : "OPERATOR KIA — MISSION FAILED"}</div>
+      <div class="nx-h2">${mode === "daily" ? `DAILY OPS · ${dailyOf(todayUTC()).mod.name}` : "OPERATION NIGHTFALL"}</div>
+      <div class="nx-deb"><div class="l">
+      <div class="nx-grade ${success ? "" : "f"}">${g}</div>
+      <div class="nx-score">${total.toLocaleString("en-US")}</div>
+      ${isBest && total > 0 ? `<div class="nx-newbest">★ NEW PERSONAL BEST</div>` : `<div class="nx-tiny">BEST · ${best.toLocaleString("en-US")}</div>`}
+      <div class="nx-stats">
+        <div><b>${formatTime(elapsed)}</b><span>TIME</span></div>
+        <div><b>${kills}</b><span>KILLS</span></div>
+        <div><b>${headshots}</b><span>HEADSHOTS</span></div>
+        <div><b>${Math.round(f.accuracy * 100)}%</b><span>ACCURACY</span></div>
+        <div><b>${squadAlive}/3</b><span>SQUAD</span></div>
+        <div><b>${success ? "3/3" : `${phase}/3`}</b><span>PHASE</span></div>
+      </div>
+      <div class="nx-tiny">COMBAT ${bonus.toLocaleString("en-US")} · ACCURACY +${f.accB} · TIME +${f.timeB} · SQUAD +${f.squadB}</div>
+      </div><div class="r">
+      <div class="nx-starrow">${starsHtml}</div>
+      ${medalsHtml ? `<div class="nx-medals">${medalsHtml}</div>` : ""}
+      <div class="nx-xpgain"><div class="top"><b>${after.index > before.index ? `RANK UP · ${after.name}` : after.name}</b><span>+${gained.toLocaleString("en-US")} XP</span></div>
+        <div class="xp"><i class="old" style="width:${before.index === after.index ? Math.round(before.pct * 100) : 0}%"></i><i class="new" style="width:${Math.round(after.pct * 100)}%"></i></div></div>
+      ${unlocked.length ? `<div class="nx-unlock">UNLOCKED · ${unlocked.map((u) => esc(u.name)).join(" · ")}</div>` : ""}
+      <div class="nx-submit"></div>
+      </div></div>
+      <div class="nx-actions" style="margin-top:18px"><button type="button" class="nx-btn" data-go="again">REDEPLOY ▸</button>
+        <button type="button" class="nx-btn ghost" data-go="loadout">LOADOUT</button>
+        <button type="button" class="nx-btn ghost" data-go="menu">MAIN MENU</button></div>
+      <div class="nx-tiny">PRESS ENTER TO REDEPLOY</div></div>`;
+    debriefHtml = hud.overlay.innerHTML;
+    lastRunResult = "";
+    lastRun = { score: total, time: Math.round(elapsed), kills, board: mode };
+    bindDebrief();
+    void submitRun(true);
+  }
+
+  function bindDebrief() {
+    bindButtons({
+      again: () => {
+        resetMission();
+        startPlay();
+      },
+      loadout: () => {
+        resetMission();
+        stage = "menu";
+        showLoadout();
+      },
+      menu: () => {
+        resetMission();
+        showMenu();
+      },
+      board: () => showBoard(lastRun?.board === "daily" ? "daily" : "all"),
+    });
+  }
+
+  // ------------------------------------------------------------- input
+  let hadLock = false;
+  function requestLock() {
+    if (mobile || stage !== "playing" || document.pointerLockElement === canvas) return;
+    try {
+      const p = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+      if (p && typeof p.catch === "function") p.catch(() => undefined);
+    } catch {
+      /* drag-look fallback */
+    }
+  }
+
+  function look(dx: number, dy: number, scale = 1) {
+    const s = 0.0021 * settings.sens * scale * (ads ? 0.6 : 1);
+    yaw -= dx * s;
+    pitch = THREE.MathUtils.clamp(pitch - dy * s, -0.95, 0.8);
+  }
+
+  let mouseDrag = false;
+  let lastMX = 0;
+  let lastMY = 0;
+  on(canvas, "pointerdown", (ev: PointerEvent) => {
+    audio.ensure();
+    if (stage !== "playing") return;
     if (ev.pointerType === "mouse") {
-      requestLock();
-      if (ev.button === 0) {
-        firing = true;
-        mouseDragId = ev.pointerId;
-        mouseDragX = ev.clientX;
-        mouseDragY = ev.clientY;
-      }
+      if (document.pointerLockElement !== canvas) requestLock();
+      if (ev.button === 0) firing = true;
       if (ev.button === 2) ads = true;
+      mouseDrag = true;
+      lastMX = ev.clientX;
+      lastMY = ev.clientY;
       return;
     }
-    canvas.setPointerCapture(ev.pointerId);
-    if (ev.clientX < viewW * 0.45) {
-      joy.active = true;
-      joy.id = ev.pointerId;
-      joy.x = ev.clientX;
-      joy.y = ev.clientY;
-    } else {
-      lookId = ev.pointerId;
-      lookX = ev.clientX;
-      lookY = ev.clientY;
-    }
-  }
-
-  function onPointerMove(ev: PointerEvent) {
-    if (!interactive()) return;
-    if (ev.pointerType === "mouse" && ev.pointerId === mouseDragId) {
-      if (document.pointerLockElement !== canvas) {
-        applyLook(ev.clientX - mouseDragX, ev.clientY - mouseDragY);
-      }
-      mouseDragX = ev.clientX;
-      mouseDragY = ev.clientY;
+    touchDown(ev);
+  });
+  on(canvas, "pointermove", (ev: PointerEvent) => {
+    if (stage !== "playing") return;
+    if (ev.pointerType === "mouse") {
+      if (document.pointerLockElement === canvas) return;
+      if (mouseDrag) look(ev.clientX - lastMX, ev.clientY - lastMY);
+      lastMX = ev.clientX;
+      lastMY = ev.clientY;
       return;
     }
-    if (ev.pointerId === joy.id && joy.active) {
-      const rect = stickEl.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      let dx = ev.clientX - cx;
-      let dy = ev.clientY - cy;
-      const max = rect.width * 0.42;
-      const len = Math.hypot(dx, dy);
-      if (len > max) {
-        dx = (dx / len) * max;
-        dy = (dy / len) * max;
-      }
-      moveInput.set(dx / max, -dy / max);
-      knobEl.style.transform = `translate(${dx}px,${dy}px)`;
-      return;
-    }
-    if (ev.pointerId === lookId) {
-      applyLook(ev.clientX - lookX, ev.clientY - lookY);
-      lookX = ev.clientX;
-      lookY = ev.clientY;
-    }
-  }
-
-  function releasePointer(ev: PointerEvent) {
-    if (ev.pointerId === mouseDragId) {
-      mouseDragId = -1;
+    touchMove(ev);
+  });
+  const upFn = (ev: PointerEvent) => {
+    if (ev.pointerType === "mouse") {
       if (ev.button === 0) firing = false;
       if (ev.button === 2) ads = false;
-    }
-    if (ev.pointerId === joy.id) {
-      joy.active = false;
-      joy.id = -1;
-      moveInput.set(0, 0);
-      knobEl.style.transform = "";
-    }
-    if (ev.pointerId === lookId) lookId = -1;
-  }
-
-  function onMouseMove(ev: MouseEvent) {
-    if (!interactive()) return;
-    if (document.pointerLockElement === canvas) {
-      documentedLock = true;
-      applyLook(ev.movementX || 0, ev.movementY || 0);
-    }
-  }
-
-  function onMouseUp(ev: MouseEvent) {
-    if (ev.button === 0) firing = false;
-    if (ev.button === 2) ads = false;
-  }
-
-  function onLockChange() {
-    documentedLock = document.pointerLockElement === canvas;
-  }
-
-  function onKeyDown(ev: KeyboardEvent) {
-    if (stage === "loading" || stage === "ended") return;
-    const k = ev.key.toLowerCase();
-    if (k === "r") {
-      startReload();
+      mouseDrag = false;
       return;
     }
-    if (["w", "a", "s", "d", "shift", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) {
+    touchUp(ev);
+  };
+  on(canvas, "pointerup", upFn);
+  on(canvas, "pointercancel", upFn);
+  on(window, "mouseup", (ev: MouseEvent) => {
+    if (ev.button === 0) firing = false;
+    if (ev.button === 2) ads = false;
+  });
+  on(canvas, "contextmenu", (ev: Event) => ev.preventDefault());
+  on(document, "mousemove", (ev: MouseEvent) => {
+    if (stage === "playing" && document.pointerLockElement === canvas) look(ev.movementX || 0, ev.movementY || 0);
+  });
+  on(document, "pointerlockchange", () => {
+    const locked = document.pointerLockElement === canvas;
+    if (locked) hadLock = true;
+    else {
+      if (hadLock && stage === "playing") pause();
+      hadLock = false;
+    }
+  });
+
+  on(window, "keydown", (ev: KeyboardEvent) => {
+    const k = ev.key.toLowerCase();
+    if (stage === "debrief" && (k === "enter" || k === " ")) {
       ev.preventDefault();
+      resetMission();
+      startPlay();
+      return;
     }
-    // Eğitim adımı hareket mesafesine değil tuşa bakar — düşük FPS'te de ilerler
-    if (
-      stage === "tutorial" &&
-      tutStep === 0 &&
-      ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)
-    ) {
-      tutStep = 1;
-      showTutorial();
+    if (stage === "menu" && k === "enter") {
+      ev.preventDefault();
+      startPlay();
+      return;
     }
+    if (k === "f" && (stage === "playing" || stage === "menu")) toggleFullscreen();
+    if (k === "m" && stage !== "loading") toggleMute();
+    if (stage === "paused" && (k === "p" || k === "escape")) {
+      resume();
+      return;
+    }
+    if (stage !== "playing") return;
+    if (k === "p" || k === "escape") {
+      pause();
+      return;
+    }
+    if (k === "r") startReload();
+    if (k === "q") shoulder = -shoulder;
+    if (k === "shift") sprintHeld = true;
+    if (["w", "a", "s", "d", " ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) ev.preventDefault();
     keys.add(k);
-  }
-
-  function onKeyUp(ev: KeyboardEvent) {
-    keys.delete(ev.key.toLowerCase());
-  }
-
-  function onBlur() {
+  });
+  on(window, "keyup", (ev: KeyboardEvent) => {
+    const k = ev.key.toLowerCase();
+    keys.delete(k);
+    if (k === "shift") sprintHeld = false;
+  });
+  on(window, "blur", () => {
     keys.clear();
     firing = false;
     ads = false;
-  }
-
-  function onContext(ev: Event) {
-    ev.preventDefault();
-  }
-
-  canvas.addEventListener("pointerdown", onPointerDown);
-  canvas.addEventListener("pointermove", onPointerMove);
-  canvas.addEventListener("pointerup", releasePointer);
-  canvas.addEventListener("pointercancel", releasePointer);
-  canvas.addEventListener("contextmenu", onContext);
-  document.addEventListener("mousemove", onMouseMove);
-  window.addEventListener("mouseup", onMouseUp);
-  document.addEventListener("pointerlockchange", onLockChange);
-  window.addEventListener("keydown", onKeyDown);
-  window.addEventListener("keyup", onKeyUp);
-  window.addEventListener("blur", onBlur);
-  listeners.push(() => {
-    canvas.removeEventListener("pointerdown", onPointerDown);
-    canvas.removeEventListener("pointermove", onPointerMove);
-    canvas.removeEventListener("pointerup", releasePointer);
-    canvas.removeEventListener("pointercancel", releasePointer);
-    canvas.removeEventListener("contextmenu", onContext);
-    document.removeEventListener("mousemove", onMouseMove);
-    window.removeEventListener("mouseup", onMouseUp);
-    document.removeEventListener("pointerlockchange", onLockChange);
-    window.removeEventListener("keydown", onKeyDown);
-    window.removeEventListener("keyup", onKeyUp);
-    window.removeEventListener("blur", onBlur);
+    sprintHeld = false;
+    if (stage === "playing") pause();
+  });
+  on(document, "visibilitychange", () => {
+    if (document.hidden && stage === "playing") pause();
   });
 
-  const onFireDown = (ev: PointerEvent) => {
-    ev.preventDefault();
-    ensureAudio();
-    if (stage === "tutorial" && tutStep === 1) {
-      tutStep = 2;
-      showTutorial();
+  const muteBtn = hud.sys.querySelector('[data-act="mute"]') as HTMLElement;
+  function syncMute() {
+    muteBtn.textContent = settings.muted ? "🔇" : "🔊";
+    muteBtn.classList.toggle("off", settings.muted);
+  }
+  function toggleMute() {
+    settings.muted = !settings.muted;
+    if (!settings.muted && settings.vol === 0) settings.vol = 0.8;
+    audio.setVolume(settings.muted ? 0 : settings.vol);
+    save(SETTINGS_KEY, settings);
+    syncMute();
+  }
+  syncMute();
+
+  function toggleFullscreen() {
+    const el = container as HTMLElement & { webkitRequestFullscreen?: () => void };
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+    else if (el.requestFullscreen) void el.requestFullscreen().catch(() => undefined);
+    else el.webkitRequestFullscreen?.();
+  }
+  hud.sys.querySelectorAll<HTMLElement>("button").forEach((b) => {
+    on(b, "click", (ev: Event) => {
+      ev.stopPropagation();
+      if (b.dataset.act === "fs") toggleFullscreen();
+      if (b.dataset.act === "mute") toggleMute();
+      if (b.dataset.act === "pause") pause();
+    });
+  });
+
+  // Touch: dynamic stick on the left, look anywhere else, fire button doubles as a look pad.
+  const stick = { id: -1, cx: 0, cy: 0 };
+  const lookT = { id: -1, x: 0, y: 0 };
+  const fireT = { id: -1, x: 0, y: 0 };
+  function touchDown(ev: PointerEvent) {
+    const rect = container.getBoundingClientRect();
+    const x = ev.clientX - rect.left;
+    const y = ev.clientY - rect.top;
+    try {
+      canvas.setPointerCapture(ev.pointerId);
+    } catch {
+      /* ignore */
     }
+    if (x < viewW * 0.42 && stick.id < 0) {
+      stick.id = ev.pointerId;
+      stick.cx = x;
+      stick.cy = y;
+      hud.stick.style.left = `${x}px`;
+      hud.stick.style.top = `${y}px`;
+      hud.stick.classList.add("on");
+      hud.stickHint.style.display = "none";
+    } else if (lookT.id < 0) {
+      lookT.id = ev.pointerId;
+      lookT.x = ev.clientX;
+      lookT.y = ev.clientY;
+    }
+  }
+  function touchMove(ev: PointerEvent) {
+    if (ev.pointerId === stick.id) {
+      const rect = container.getBoundingClientRect();
+      let dx = ev.clientX - rect.left - stick.cx;
+      let dy = ev.clientY - rect.top - stick.cy;
+      const max = 52;
+      const l = Math.hypot(dx, dy);
+      if (l > max) {
+        dx = (dx / l) * max;
+        dy = (dy / l) * max;
+      }
+      moveIn.set(dx / max, -dy / max);
+      hud.stickKnob.style.transform = `translate(${dx}px,${dy}px)`;
+    } else if (ev.pointerId === lookT.id) {
+      look(ev.clientX - lookT.x, ev.clientY - lookT.y, 1.5);
+      lookT.x = ev.clientX;
+      lookT.y = ev.clientY;
+    }
+  }
+  function touchUp(ev: PointerEvent) {
+    if (ev.pointerId === stick.id) {
+      stick.id = -1;
+      moveIn.set(0, 0);
+      hud.stickKnob.style.transform = "";
+      hud.stick.classList.remove("on");
+    }
+    if (ev.pointerId === lookT.id) lookT.id = -1;
+  }
+  on(hud.tFire, "pointerdown", (ev: PointerEvent) => {
+    ev.preventDefault();
+    audio.ensure();
     firing = true;
-  };
-  const onFireUp = () => {
+    fireT.id = ev.pointerId;
+    fireT.x = ev.clientX;
+    fireT.y = ev.clientY;
+    hud.tFire.classList.add("on");
+    try {
+      hud.tFire.setPointerCapture(ev.pointerId);
+    } catch {
+      /* ignore */
+    }
+  });
+  on(hud.tFire, "pointermove", (ev: PointerEvent) => {
+    if (ev.pointerId !== fireT.id) return;
+    look(ev.clientX - fireT.x, ev.clientY - fireT.y, 1.3);
+    fireT.x = ev.clientX;
+    fireT.y = ev.clientY;
+  });
+  const fireUp = () => {
     firing = false;
+    fireT.id = -1;
+    hud.tFire.classList.remove("on");
   };
-  const onAdsDown = (ev: PointerEvent) => {
+  on(hud.tFire, "pointerup", fireUp);
+  on(hud.tFire, "pointercancel", fireUp);
+  on(hud.tAds, "pointerdown", (ev: PointerEvent) => {
     ev.preventDefault();
     ads = !ads;
-    tAds.classList.toggle("on", ads);
-  };
-  const onReload = (ev: PointerEvent) => {
+    hud.tAds.classList.toggle("on", ads);
+  });
+  on(hud.tReload, "pointerdown", (ev: PointerEvent) => {
     ev.preventDefault();
     startReload();
-  };
-  tFire.addEventListener("pointerdown", onFireDown);
-  tFire.addEventListener("pointerup", onFireUp);
-  tFire.addEventListener("pointercancel", onFireUp);
-  tAds.addEventListener("pointerdown", onAdsDown);
-  tReload.addEventListener("pointerdown", onReload);
-  listeners.push(() => {
-    tFire.removeEventListener("pointerdown", onFireDown);
-    tFire.removeEventListener("pointerup", onFireUp);
-    tFire.removeEventListener("pointercancel", onFireUp);
-    tAds.removeEventListener("pointerdown", onAdsDown);
-    tReload.removeEventListener("pointerdown", onReload);
+  });
+  on(hud.tSwap, "pointerdown", (ev: PointerEvent) => {
+    ev.preventDefault();
+    shoulder = -shoulder;
   });
 
-  // ------------------------------------------------------------- composer
+  // ------------------------------------------------------------ composer
   let composer: EffectComposer | null = null;
+  let grade: ShaderPass | null = null;
   if (!mobile) {
     try {
-      composer = new EffectComposer(renderer);
+      const rt = new THREE.WebGLRenderTarget(viewW * pixelRatio(), viewH * pixelRatio(), { type: THREE.HalfFloatType, samples: 4 });
+      composer = new EffectComposer(renderer, rt);
       composer.addPass(new RenderPass(scene, camera));
-      composer.addPass(
-        new UnrealBloomPass(new THREE.Vector2(viewW, viewH), 0.2, 0.5, 0.92),
-      );
+      composer.addPass(new UnrealBloomPass(new THREE.Vector2(viewW, viewH), 0.5, 0.5, 0.9));
       composer.addPass(new OutputPass());
+      grade = new ShaderPass(GradeShader);
+      composer.addPass(grade);
     } catch (err) {
-      console.error("[NEXUS] Post-processing unavailable, rendering directly", err);
-      composer?.dispose();
+      console.error("[NEXUS] post-processing unavailable", err);
       composer = null;
+      grade = null;
     }
   }
 
-  // --------------------------------------------------------------- resize
   const onResize = () => {
     viewW = Math.max(1, container.clientWidth);
     viewH = Math.max(1, container.clientHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.6));
+    renderer.setPixelRatio(pixelRatio());
     renderer.setSize(viewW, viewH);
+    composer?.setPixelRatio(pixelRatio());
+    composer?.setSize(viewW, viewH);
     camera.aspect = viewW / viewH;
     camera.updateProjectionMatrix();
-    composer?.setSize(viewW, viewH);
   };
-  let observer: ResizeObserver | null = null;
-  if (typeof ResizeObserver !== "undefined") {
-    observer = new ResizeObserver(onResize);
-    observer.observe(container);
-  } else {
-    window.addEventListener("resize", onResize);
-    listeners.push(() => window.removeEventListener("resize", onResize));
-  }
+  const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(onResize) : null;
+  if (ro) ro.observe(container);
+  else on(window, "resize", onResize);
 
-  // ---------------------------------------------------------------- loop
+  // --------------------------------------------------------------- loop
   let raf = 0;
   let last = performance.now();
-  let hudAccum = 0;
+  let hudAcc = 0;
+  let scoreAcc = 0;
 
-  const frame = (now: number) => {
+  function updateRain(dt: number) {
+    const cx = camera.position.x;
+    const cz = camera.position.z;
+    const fall = 21 * dt;
+    for (let i = 0; i < RAIN; i++) {
+      const o = i * 6;
+      let y = rainPos[o + 1] - fall;
+      let x = rainPos[o] - fall * 0.08;
+      let z = rainPos[o + 2] + fall * 0.03;
+      if (y < 0 || Math.abs(x - cx) > 18 || Math.abs(z - cz) > 18) {
+        x = cx + (fx() - 0.5) * 36;
+        z = cz + (fx() - 0.5) * 36;
+        if (y < 0) y = 14 + fx() * 3;
+      }
+      rainPos[o] = x;
+      rainPos[o + 1] = y;
+      rainPos[o + 2] = z;
+      rainPos[o + 3] = x - 0.04;
+      rainPos[o + 4] = y + 0.5;
+      rainPos[o + 5] = z + 0.015;
+    }
+    rainGeo.attributes.position.needsUpdate = true;
+  }
+
+  function separate() {
+    for (let i = 0; i < soldiers.length; i++) {
+      const A = soldiers[i];
+      if (!A.alive || A.down) continue;
+      for (let j = i + 1; j < soldiers.length; j++) {
+        const B = soldiers[j];
+        if (!B.alive || B.down) continue;
+        const dx = B.root.position.x - A.root.position.x;
+        const dz = B.root.position.z - A.root.position.z;
+        const d = Math.hypot(dx, dz);
+        if (d > 0.001 && d < 0.75) {
+          const push = (0.75 - d) * 0.5;
+          const nx = (dx / d) * push;
+          const nz = (dz / d) * push;
+          if (A !== player) moveBy(A, -nx, -nz);
+          if (B !== player) moveBy(B, nx, nz);
+        }
+      }
+    }
+  }
+
+  function updateExtraction(dt: number, t: number) {
+    padInner.rotation.y += dt * 0.6;
+    if (phase < 3) {
+      padMat.opacity = 0.28 + Math.sin(t * 1.4) * 0.06;
+      beamMat.opacity = 0;
+      return;
+    }
+    padMat.opacity = 0.65 + Math.sin(t * 4) * 0.25;
+    // Fade the beam out as the camera enters it so it never tints the whole view.
+    const camD = Math.hypot(camera.position.x - EXTRACT.x, camera.position.z - EXTRACT.z);
+    beamMat.opacity = (0.3 + Math.sin(t * 2.5) * 0.06) * THREE.MathUtils.smoothstep(camD, 1.4, 4.5);
+    progGeo.setDrawRange(0, Math.floor(uplink * 96) * 6);
+  }
+
+  function tick(now: number) {
     if (disposed) return;
-    raf = requestAnimationFrame(frame);
+    raf = requestAnimationFrame(tick);
     const realDt = Math.min(0.05, Math.max(0, (now - last) / 1000));
     last = now;
+    const t = now / 1000;
     if (slowTimer > 0) {
       slowTimer -= realDt;
       if (slowTimer <= 0) timeScale = 1;
     }
-    const canSim = stage === "playing" || stage === "tutorial";
-    const dt = canSim ? realDt * timeScale : 0;
-    if (stage === "playing") elapsed += realDt;
+    const simulate = stage === "playing" || stage === "dead";
+    const dt = simulate ? realDt * timeScale : 0;
 
-    if (dt > 0) {
-      updateCamera(realDt);
-      updatePlayer(dt);
-      if (startedCombat) updateAllies(dt);
-      if (startedCombat) updateEnemies(dt);
-      if (startedCombat) updateExtraction(dt);
-    } else {
-      updateCamera(realDt);
-    }
-    updateFx(realDt);
-    updateMarker();
-    updateEdgeArrow();
-
-    scoreClock += realDt;
-    if (scoreClock >= 0.2) {
-      scoreClock = 0;
-      hooks.onScore(ended ? score : scoreNow());
-    }
-    hudAccum += realDt;
-    if (hudAccum >= 0.1) {
-      hudAccum = 0;
-      updateHud();
-    }
-
-    if (composer) composer.render(realDt);
-    else renderer.render(scene, camera);
-  };
-  raf = requestAnimationFrame(frame);
-  void boot();
-
-  // -------------------------------------------------------------- dispose
-  function disposeMaterial(m: THREE.Material, texSet: Set<THREE.Texture>) {
-    const record = m as unknown as Record<string, unknown>;
-    for (const key of Object.keys(record)) {
-      const value = record[key];
-      if (value && typeof value === "object" && (value as THREE.Texture).isTexture) {
-        texSet.add(value as THREE.Texture);
+    if (stage === "playing") {
+      elapsed += realDt;
+      if (pendingWave) {
+        phaseTimer -= realDt;
+        if (phaseTimer <= 0) {
+          spawnWave(WAVE2, true);
+          pendingWave = 0;
+        }
+      } else if (phase === 2 && hostilesLeft() === 0) {
+        advancePhase();
+      }
+      // Don't let the player hunt for stragglers: reveal the last hostiles after a lull.
+      const left = hostilesLeft();
+      quietTime = enemies.some((e) => e.alive && e.state === "combat") ? 0 : quietTime + realDt;
+      if (left > 0 && left <= 2 && quietTime > 6) {
+        quietTime = -999;
+        for (const e of enemies) {
+          if (!e.alive) continue;
+          e.spotted = 999;
+          alertEnemy(e, 0.5);
+        }
+        banner("INTEL", left === 1 ? "LAST HOSTILE MARKED" : "LAST HOSTILES MARKED", "Uplink drone has painted their position", false, 2.4);
       }
     }
-    m.dispose();
+    if (stage === "dead") {
+      deathTimer += realDt;
+      if (deathTimer > (success ? 2.6 : 2.8)) showDebrief();
+    }
+
+    if (simulate) {
+      aimAssist(realDt);
+      updatePlayer(dt);
+      allies.forEach((a, i) => updateAlly(a, i, dt));
+      for (const e of [...enemies]) updateEnemy(e, dt);
+      separate();
+      updatePickups(dt);
+      updateCamera(realDt);
+    } else if (stage === "menu" || stage === "loading") {
+      menuCamera(realDt);
+    }
+    // Animate + pose every soldier (also in the menu so idles breathe).
+    const animDt = stage === "paused" || stage === "debrief" ? 0 : simulate ? dt : realDt;
+    if (animDt > 0) {
+      for (const s of soldiers) {
+        if (s.alive && !s.down) {
+          s.actor.mixer.update(animDt);
+          upperBody(s, animDt);
+        }
+        updateBodyPose(s, animDt);
+      }
+    }
+    if (stage !== "paused" && stage !== "debrief") {
+      updateFx(realDt);
+      updateRain(realDt);
+      updateExtraction(realDt, t);
+      audio.update(realDt);
+    }
+    if (simulate) {
+      updateFastHud(realDt);
+      updateMedals(realDt);
+      updateCompass();
+      updateObjectiveMarker();
+      hudAcc += realDt;
+      if (hudAcc > 0.1) {
+        hudAcc = 0;
+        updateHud();
+      }
+      scoreAcc += realDt;
+      if (scoreAcc > 0.25) {
+        scoreAcc = 0;
+        hooks.onScore(bonus);
+      }
+    }
+    if (grade) {
+      grade.uniforms.uTime.value = t;
+      grade.uniforms.uFade.value = stage === "dead" ? Math.min(0.55, deathTimer * 0.2) : 0;
+    }
+    if (composer) composer.render(realDt);
+    else renderer.render(scene, camera);
+  }
+  raf = requestAnimationFrame(tick);
+  void boot();
+
+  if (process.env.NODE_ENV !== "production") {
+    // Dev-only test handle (used for automated screenshots).
+    (window as unknown as Record<string, unknown>).__nx = {
+      get stage() {
+        return stage;
+      },
+      get phase() {
+        return phase;
+      },
+      get player() {
+        return player;
+      },
+      soldiers,
+      enemies,
+      allies,
+      camera,
+      start: () => startPlay(),
+      killWave: () => enemies.filter((e) => e.alive).forEach((e) => damage(e, 999, player, false)),
+      god: () => {
+        if (player) player.hp = player.maxHp = 1e6;
+      },
+      teleport: (x: number, z: number) => player?.root.position.set(x, 0, z),
+      setView: (y: number, p: number) => {
+        yaw = y;
+        pitch = p;
+      },
+      setAds: (v: boolean) => (ads = v),
+      setFiring: (v: boolean) => (firing = v),
+      hurt: (n: number) => player && damage(player, n, enemies[0] ?? null),
+      cam: (p: number[] | null, l?: number[]) => {
+        debugCam = p && l ? { pos: new THREE.Vector3(p[0], p[1], p[2]), look: new THREE.Vector3(l[0], l[1], l[2]) } : null;
+      },
+    };
   }
 
+  // ------------------------------------------------------------ dispose
   return {
     dispose() {
       if (disposed) return;
       disposed = true;
       cancelAnimationFrame(raf);
       for (const off of listeners) off();
-      observer?.disconnect();
+      ro?.disconnect();
       if (document.pointerLockElement === canvas) {
         try {
           document.exitPointerLock();
@@ -2446,12 +3599,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
           /* ignore */
         }
       }
-
-      for (const s of soldiers) {
-        s.actor.mixer.stopAllAction();
-        s.actor.mixer.uncacheRoot(s.model);
-      }
-
+      clearMission();
       const srcGeos = new Set<THREE.BufferGeometry>();
       const srcMats = new Set<THREE.Material>();
       const srcTex = new Set<THREE.Texture>();
@@ -2459,41 +3607,33 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         obj.traverse((o) => {
           const mesh = o as THREE.Mesh;
           if (mesh.geometry) srcGeos.add(mesh.geometry);
-          if (mesh.material) {
-            if (Array.isArray(mesh.material)) mesh.material.forEach((m) => srcMats.add(m));
-            else srcMats.add(mesh.material);
-          }
+          if (mesh.material) (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).forEach((m) => srcMats.add(m));
         });
       }
-      for (const g of srcGeos) g.dispose();
-      for (const m of srcMats) disposeMaterial(m, srcTex);
-      for (const t of srcTex) t.dispose();
-
-      for (const g of geometries) g.dispose();
-      for (const m of materials) m.dispose();
-      for (const t of textures) t.dispose();
-
-      if (envTarget) envTarget.dispose();
-      if (hdrTexture) hdrTexture.dispose();
-      if (pmrem) pmrem.dispose();
+      for (const m of srcMats) {
+        for (const v of Object.values(m as unknown as Record<string, unknown>)) {
+          if (v && typeof v === "object" && (v as THREE.Texture).isTexture) srcTex.add(v as THREE.Texture);
+        }
+      }
+      srcGeos.forEach((g) => g.dispose());
+      srcMats.forEach((m) => m.dispose());
+      srcTex.forEach((t) => t.dispose());
+      geometries.forEach((g) => g.dispose());
+      materials.forEach((m) => m.dispose());
+      textures.forEach((t) => t.dispose());
+      envRT?.dispose();
+      hdrTex?.dispose();
+      pmrem?.dispose();
       scene.environment = null;
-
-      for (const pass of composer?.passes ?? []) pass.dispose();
+      scene.background = null;
+      for (const p of composer?.passes ?? []) p.dispose();
       composer?.dispose();
       renderer.dispose();
-      void actx?.close();
-
-      root.remove();
-      style.remove();
+      audio.dispose();
+      hud.root.remove();
+      hud.style.remove();
       canvas.remove();
-      enemyByMesh.clear();
-      popupTimes.clear();
-      sourceObjects.length = 0;
-      soldiers.length = 0;
-      enemies.length = 0;
-      allies.length = 0;
-      coverMeshes.length = 0;
-      solidBoxes.length = 0;
+      if (process.env.NODE_ENV !== "production") delete (window as unknown as Record<string, unknown>).__nx;
     },
   };
 }

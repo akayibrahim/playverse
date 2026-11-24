@@ -7,7 +7,7 @@ type RunStat = { label: string; value: string };
 
 type GameHooks = {
   onScore: (score: number) => void;
-  onGameOver: (score: number, stats: RunStat[]) => void;
+  onGameOver: (score: number, stats: RunStat[], opts?: { ownScreen?: boolean }) => void;
   onBoost?: (meter: number, active: boolean) => void;
   onPopup?: (text: string) => void;
   best?: number;
@@ -56,11 +56,12 @@ export default function StageCanvas({ slug }: { slug: string }) {
               setPopups((p) => p.filter((x) => x.id !== id));
             }, 1100);
           },
-          onGameOver: (final, runStats) => {
+          onGameOver: (final, runStats, opts) => {
             const recorded = submitScore(slug, final);
             setBest(recorded);
             setStats(runStats);
-            setGameOver(true);
+            // Games with their own debrief screen handle restart themselves.
+            if (!opts?.ownScreen) setGameOver(true);
           },
         });
       })
@@ -92,10 +93,10 @@ export default function StageCanvas({ slug }: { slug: string }) {
   }, [gameOver]);
 
   return (
-    <div className="relative flex-1 flex flex-col">
+    <div className="relative flex-1 min-h-0 flex flex-col">
       <div
         ref={containerRef}
-        className="card touch-none select-none overflow-hidden flex-1 min-h-[420px] relative"
+        className="card touch-none select-none overflow-hidden flex-1 min-h-[300px] relative bg-[#05060f] [@media(max-height:560px)]:rounded-none [@media(max-height:560px)]:border-0"
       />
 
       <div className="absolute inset-x-0 top-12 flex flex-col items-center gap-1 pointer-events-none z-10">
@@ -137,7 +138,7 @@ export default function StageCanvas({ slug }: { slug: string }) {
         </div>
       )}
 
-      <div className="mt-2 flex items-center justify-between px-1 font-mono text-[11px] uppercase tracking-wider text-faint">
+      <div className="mt-2 flex items-center justify-between px-1 font-mono text-[11px] uppercase tracking-wider text-faint [@media(max-height:560px)]:hidden">
         <span>Score <strong className="text-foreground">{score}</strong></span>
         <span>Mouse / keyboard · touch supported</span>
         <span>Best <strong className="text-cyan-400">{best}</strong></span>
