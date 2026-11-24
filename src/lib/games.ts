@@ -58,6 +58,19 @@ export const GAMES: GameMeta[] = [
     features: ["400 km/h boost", "Rivals + ghost", "Two circuits"],
     accent: "#ff3fc8",
   },
+  {
+    slug: "echo",
+    title: "ECHO",
+    tagline: "Ninety seconds, the same murder, every loop — until you see it coming.",
+    emoji: "⏳",
+    gradient: "from-violet-500/40 to-amber-600/30",
+    status: "live",
+    genre: "Time-loop mystery",
+    cover: "/assets/promo/echo.webp",
+    pitch: "At 1:25 the councillor dies and the street rewinds. Watch through the scope, follow the amber case, rewind what you missed — then take the one shot that breaks the loop.",
+    features: ["Rewind any moment", "Clues persist", "One round per loop"],
+    accent: "#c4a1ff",
+  },
 ];
 
 export function getGame(slug: string): GameMeta | undefined {

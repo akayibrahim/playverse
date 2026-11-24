@@ -51,5 +51,17 @@ export function GameIcon({ slug, className }: { slug: string; className?: string
       </svg>
     );
   }
+  if (slug === "echo") {
+    return (
+      <svg viewBox="0 0 64 64" fill="none" className={className}>
+        {/* geri saran saat: yarım halka + ok, ortada hedef */}
+        <path d="M14 32 A18 18 0 1 0 22 17" stroke="#c4a1ff" strokeWidth="2.2" strokeLinecap="round" />
+        <path d="M22 9 L22 17 L14 17" stroke="#c4a1ff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M32 21 V32 L40 37" stroke="#fde68a" strokeWidth="2" strokeLinecap="round" />
+        <circle cx="32" cy="32" r="2" fill="#fbbf24" />
+        <path d="M47 47 l6 6" stroke="#ff6b74" strokeWidth="2" strokeLinecap="round" opacity="0.8" />
+      </svg>
+    );
+  }
   return null;
 }
