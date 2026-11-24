@@ -95,6 +95,19 @@ export const HUD_CSS = `
 .nx-wpn .gr.none{opacity:.35;}
 .nx-prompt.act{pointer-events:auto;cursor:pointer;border:1px solid var(--c);background:rgba(10,30,34,.7);}
 .nx-arc{position:absolute;inset:0;pointer-events:none;}
+.nx-kc{position:absolute;inset:0;pointer-events:none;z-index:4;}
+.nx-kc i{position:absolute;left:0;right:0;height:11%;background:#000;transform:scaleY(0);transition:transform .35s cubic-bezier(.2,.8,.2,1);}
+.nx-kc i.t{top:0;transform-origin:top;}
+.nx-kc i.b{bottom:0;transform-origin:bottom;}
+.nx-kc .lb{position:absolute;left:max(5%,calc(env(safe-area-inset-left) + 16px));bottom:calc(11% + 16px);text-align:left;opacity:0;transition:opacity .3s;
+  padding-left:12px;border-left:2px solid var(--r);}
+.nx-kc .lb span{display:block;font-size:10px;letter-spacing:.42em;color:var(--r);}
+.nx-kc .lb b{display:block;margin-top:4px;font:800 26px/1 var(--sans);letter-spacing:.08em;color:#f4f9fb;text-shadow:0 2px 12px rgba(0,0,0,.6);}
+.nx-kc .lb em{display:block;margin-top:5px;font-style:normal;font-size:10px;letter-spacing:.24em;color:#cfe3ea;}
+.nx-root.killcam .nx-kc i{transform:scaleY(1);}
+.nx-root.killcam .nx-kc .lb{opacity:1;}
+.nx-root.killcam .nx-hud > :not(.nx-feed):not(.nx-medal):not(.nx-pops){opacity:0;transition:opacity .2s;}
+.nx-root.killcam .nx-touch{opacity:0;pointer-events:none;}
 
 /* crosshair */
 .nx-cross{position:absolute;left:50%;top:50%;width:0;height:0;--g:10px;transition:opacity .15s;}
@@ -450,6 +463,7 @@ export function buildHud(container: HTMLElement, mobile: boolean) {
   root.innerHTML = `
   <div class="nx-blood"></div>
   <div class="nx-scope"></div>
+  <div class="nx-kc"><i class="t"></i><i class="b"></i><div class="lb"><span>◉ KILLCAM</span><b>FINAL KILL</b><em></em></div></div>
   <div class="nx-hud">
     <div class="nx-obj nx-panelbg"><div class="k"><span class="ph">PHASE 1/3</span><b class="st">ACTIVE</b></div>
       <div class="t">CLEAR THE STREET</div><div class="s">HOSTILES 6</div><div class="bar"><i></i></div></div>
@@ -572,6 +586,8 @@ export function buildHud(container: HTMLElement, mobile: boolean) {
     promptText: q(root, ".nx-prompt .tx"),
     promptFill: q(root, ".nx-prompt .bar i"),
     banner: q(root, ".nx-banner"),
+    kcSub: q(root, ".nx-kc .lb em"),
+    kcTitle: q(root, ".nx-kc .lb b"),
     bannerK: q(root, ".nx-banner .k"),
     bannerT: q(root, ".nx-banner .t"),
     bannerS: q(root, ".nx-banner .s"),

@@ -1859,6 +1859,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     deathTimer = 0;
     timeScale = 1;
     slowTimer = 0;
+    endKillcam();
     shake = 0;
     damageFlash = 0;
     lastHurt = 99;
@@ -2027,6 +2028,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
 
   function finishMission(won: boolean) {
     if (stage !== "playing") return;
+    endKillcam();
     success = won;
     stage = "dead"; // short cinematic hold before the debrief
     deathTimer = 0;
@@ -2444,7 +2446,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   function playerFire() {
-    if (!player || !player.alive || fireCd > 0 || reloadT > 0 || player.lock > 0) return;
+    if (!player || !player.alive || fireCd > 0 || reloadT > 0 || player.lock > 0 || killcam) return;
     if (ammo <= 0) {
       audio.dry();
       fireCd = 0.25;
@@ -2677,10 +2679,81 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     feed(`${esc(byPlayer ? "YOU" : src?.name ?? "SQUAD")} <em>✕</em> ${label}${head ? " <u>◎ HEADSHOT</u>" : ""}`, head ? "hs" : "");
     if (fx() < mod.drop) dropAmmo(e.root.position);
     if (hostilesLeft() === 0 && pendingWave === 0 && phase < 3) {
-      timeScale = 0.3;
-      slowTimer = 0.7;
+      if (!startKillcam(e, src, head)) {
+        timeScale = 0.3;
+        slowTimer = 0.7;
+      }
       advancePhase();
     }
+  }
+
+  // ------------------------------------------------------------- killcam
+  // The wave-ending kill replays in slow motion from a cinematic orbit around the victim.
+  type Killcam = { t: number; dur: number; victim: Soldier; dir: THREE.Vector3; side: number; focus: THREE.Vector3 };
+  let killcam: Killcam | null = null;
+  function startKillcam(victim: Soldier, src: Soldier | null, head: boolean) {
+    if (!src || killcam || stage !== "playing" || !player?.alive) return false;
+    const dir = new THREE.Vector3().subVectors(victim.root.position, src.root.position).setY(0);
+    if (dir.lengthSq() < 1e-4) dir.set(0, 0, -1);
+    dir.normalize();
+    killcam = { t: 0, dur: victim.kind === "drone" ? 2 : 2.4, victim, dir, side: fx() < 0.5 ? 1 : -1, focus: new THREE.Vector3() };
+    firing = false;
+    ads = false;
+    grenAim = false;
+    timeScale = 0.16;
+    slowTimer = 0;
+    hud.kcTitle.textContent = src === player ? (head ? "HEADSHOT" : "FINAL KILL") : "SQUAD FINAL KILL";
+    hud.kcSub.textContent = `${src === player ? "YOU" : src.name} ✕ ${KIND_LABEL[victim.kind]} · ${Math.round(dir.set(victim.root.position.x - src.root.position.x, 0, victim.root.position.z - src.root.position.z).length())} M`;
+    dir.normalize();
+    hud.root.classList.add("killcam");
+    audio.whiz(0);
+    return true;
+  }
+
+  function endKillcam() {
+    if (!killcam) return;
+    killcam = null;
+    timeScale = 1;
+    hud.root.classList.remove("killcam");
+  }
+
+  const kcPos = new THREE.Vector3();
+  const kcDir = new THREE.Vector3();
+  function killcamCamera(dt: number) {
+    const k = killcam!;
+    k.t += dt;
+    const u = Math.min(1, k.t / k.dur);
+    timeScale = u < 0.72 ? 0.16 : THREE.MathUtils.lerp(0.16, 1, (u - 0.72) / 0.28);
+    const v = k.victim;
+    const target =
+      v.kind === "drone"
+        ? (v.body.parent === scene ? v.body.position : v.root.position).clone().setY(DRONE_H * 0.6 + (v.body.parent === scene ? v.body.position.y * 0.4 : 0))
+        : v.rig
+          ? v.rig.hips.getWorldPosition(kcPos).clone()
+          : v.root.position.clone().setY(1);
+    if (k.t <= dt) k.focus.copy(target);
+    else k.focus.lerp(target, 1 - Math.exp(-6 * dt));
+    // orbit from behind the bullet's path round to the side, easing in
+    const e = u * u * (3 - 2 * u);
+    const ang = k.side * (0.45 + e * 1.5);
+    kcDir.copy(k.dir).negate().applyAxisAngle(UP, ang);
+    const radius = 3.4 - e * 1.1;
+    kcPos.copy(k.focus).addScaledVector(kcDir, radius);
+    kcPos.y = Math.max(groundY(kcPos.x) + 0.35, k.focus.y + 0.75 - e * 0.35);
+    // keep walls out of the shot
+    tmpV.subVectors(kcPos, k.focus);
+    const d = tmpV.length();
+    losRay.set(k.focus, tmpV.divideScalar(d));
+    losRay.far = d;
+    const hit = losRay.intersectObjects(blockers, false)[0];
+    if (hit) kcPos.copy(k.focus).addScaledVector(tmpV, Math.max(0.6, hit.distance - 0.2));
+    camera.position.copy(kcPos);
+    camera.lookAt(k.focus.x, k.focus.y + 0.15, k.focus.z);
+    if (Math.abs(camera.fov - 48) > 0.05) {
+      camera.fov = 48;
+      camera.updateProjectionMatrix();
+    }
+    if (k.t >= k.dur) endKillcam();
   }
 
   function tgtH(s: Soldier) {
@@ -3415,6 +3488,10 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   const camDir = new THREE.Vector3();
   function updateCamera(dt: number) {
     if (!player) return;
+    if (killcam) {
+      killcamCamera(dt);
+      return;
+    }
     adsBlend += ((ads ? 1 : 0) - adsBlend) * Math.min(1, dt * 12);
     shoulderBlend += (shoulder - shoulderBlend) * Math.min(1, dt * 9);
     recoil *= Math.exp(-(firing ? 4 : 9) * dt);
