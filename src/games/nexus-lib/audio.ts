@@ -302,6 +302,19 @@ export function createAudio() {
       burst({ dur: 0.04, type: "bandpass", freq: 3200, q: 4, gain: 0.25 });
       burst({ dur: 0.05, type: "bandpass", freq: 2100, q: 4, gain: 0.25, delay: 0.09 });
     },
+    /** Brass casing bouncing on wet asphalt. */
+    casing(speed: number) {
+      const g = Math.min(0.06, 0.012 * speed);
+      const f = 4200 + Math.random() * 1800;
+      osc({ type: "sine", f0: f, f1: f * 0.96, dur: 0.07, gain: g, send: 0.15 });
+      osc({ type: "sine", f0: f * 1.48, f1: f * 1.45, dur: 0.05, gain: g * 0.5 });
+    },
+    /** Rifle / wreck clattering onto the ground. */
+    clatter(dist: number, speed: number) {
+      const g = Math.min(0.25, 0.05 * speed) / (1 + dist * 0.08);
+      burst({ dur: 0.12, type: "bandpass", freq: 1400 + Math.random() * 600, q: 2.5, gain: g, send: 0.3 });
+      osc({ type: "triangle", f0: 820, f1: 610, dur: 0.09, gain: g * 0.4 });
+    },
     dry() {
       osc({ type: "square", f0: 1500, f1: 1400, dur: 0.02, gain: 0.07 });
     },

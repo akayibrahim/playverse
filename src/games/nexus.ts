@@ -19,6 +19,7 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { createAudio } from "./nexus-lib/audio";
+import { createPhysics, type Physics, type Prop, type Ragdoll } from "./nexus-lib/physics";
 import { buildHud, esc } from "./nexus-lib/hud";
 import { GradeShader } from "./nexus-lib/grade";
 import { buildRifle, createRifleParts, rotateBoneWorld, solveArm, type Rifle } from "./nexus-lib/rig";
@@ -143,6 +144,11 @@ type Soldier = {
   deathClip: string;
   lock: number;
   rig: Rig | null;
+  /** Physics state after death: ragdoll bodies, dropped rifle, drone wreck. */
+  ragdoll: Ragdoll | null;
+  rifleProp: Prop | null;
+  wreck: Prop | null;
+  dropT: number;
 };
 
 /** Bones sampled each frame to keep hitboxes / rifle pivot on the animated body. */
@@ -394,6 +400,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   const pickups: Pickup[] = [];
   const blockers: THREE.Mesh[] = [];
   const solidBoxes: THREE.Box3[] = [];
+  let phys: Physics | null = null;
   const coverPoints: CoverPoint[] = [];
   let nextId = 1;
 
@@ -875,6 +882,17 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     clips = [...sol.animations, ...mocap];
     measureRig();
     buildWorld(env.map((g) => g?.scene ?? null));
+    void createPhysics().then((p) => {
+      if (!p) return;
+      if (disposed) {
+        p.dispose();
+        return;
+      }
+      phys = p;
+      for (const b of solidBoxes) p.addStaticBox(b);
+      // raised sidewalks either side of the road
+      for (const sx of [-1, 1]) p.addStaticBox(new THREE.Box3(new THREE.Vector3(sx > 0 ? ROAD_HALF + 0.1 : -80, -0.5, -120), new THREE.Vector3(sx > 0 ? 80 : -ROAD_HALF - 0.1, 0.12, 120)));
+    });
     resetMission();
     renderer.compile(scene, camera);
     showMenu();
@@ -1434,6 +1452,10 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       deathClip: "",
       lock: 0,
       rig: null,
+      ragdoll: null,
+      rifleProp: null,
+      wreck: null,
+      dropT: 0,
     };
     if (!isDrone) {
       const rb = ["Hips", "Spine", "Spine2", "Head"].map((n) => findBone(model, n));
@@ -1491,6 +1513,12 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   function removeSoldier(s: Soldier) {
+    if (s.ragdoll && phys) phys.freeze(s.ragdoll);
+    if (s.rifleProp && phys) phys.removeProp(s.rifleProp);
+    if (s.wreck && phys) phys.removeProp(s.wreck);
+    s.ragdoll = s.rifleProp = s.wreck = null;
+    if (s.rifle.group.parent === scene) scene.remove(s.rifle.group);
+    if (s.body.parent === scene) scene.remove(s.body);
     s.actor.mixer.stopAllAction();
     s.actor.mixer.uncacheRoot(s.model);
     scene.remove(s.root);
@@ -1569,8 +1597,9 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   /** Mocap death / downed collapse. The rifle drops with the right hand. */
-  function startDeath(s: Soldier, head: boolean) {
+  function startDeath(s: Soldier, head: boolean, opt: { from?: THREE.Vector3; force?: number; ragdoll?: boolean } = {}) {
     if (s.kind === "drone") return;
+    if (phys && s.team === "hostile" && (opt.ragdoll || fx() < 0.5) && startRagdoll(s, head, opt)) return;
     const a = s.actor.actions;
     const pool = head ? ["death_c", "death_a", "death_b"] : ["death_a", "death_b", "death_c"];
     const pick = head && fx() < 0.6 ? pool[0] : pool[Math.floor(fx() * pool.length)];
@@ -1584,6 +1613,68 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     playOnce(s, pick, 0.1, pick === "death_c" ? 1.35 : 1);
     s.deathClip = pick;
     if (s.bones) s.bones.rHand.attach(s.rifle.group);
+    if (phys) s.dropT = 0.35 + fx() * 0.3;
+  }
+
+  const ragV = new THREE.Vector3();
+  const ragP = new THREE.Vector3();
+  /** Physics death: the body goes limp and takes the bullet's momentum. */
+  function startRagdoll(s: Soldier, head: boolean, opt: { from?: THREE.Vector3; force?: number }) {
+    if (!phys) return false;
+    s.actor.mixer.update(0);
+    ragV.set(s.vel.x, 0, s.vel.z);
+    const rd = phys.ragdoll(s.model, (n) => findBone(s.model, n), ragV, s.body.scale.x);
+    if (!rd) return false;
+    if (s.hitAct) s.hitAct = null;
+    s.actor.mixer.stopAllAction();
+    s.ragdoll = rd;
+    s.deathClip = "ragdoll";
+    s.lock = 0;
+    s.crouchWant = false;
+    const hb = s.hitboxes.find((h) => h.userData.part === (head ? "head" : "torso"));
+    if (hb) hb.getWorldPosition(ragP);
+    else ragP.copy(s.root.position).setY(1.2);
+    if (opt.from) ragV.subVectors(ragP, opt.from).setY(0).normalize();
+    else ragV.set(-Math.sin(s.root.rotation.y), 0, -Math.cos(s.root.rotation.y));
+    const f = opt.force ?? (head ? 34 : 70);
+    ragV.multiplyScalar(f).setY(f * 0.18);
+    phys.impulseAt(rd, ragP, ragV);
+    dropRifle(s, ragV.multiplyScalar(0.02));
+    return true;
+  }
+
+  const rifleBox = { half: new THREE.Vector3(), center: new THREE.Vector3(), ready: false };
+  function dropRifle(s: Soldier, push?: THREE.Vector3) {
+    if (!phys || s.rifleProp || s.kind === "drone") return;
+    if (!rifleBox.ready) {
+      const g = s.rifle.group.clone(true);
+      g.position.set(0, 0, 0);
+      g.quaternion.identity();
+      g.scale.set(1, 1, 1);
+      g.updateMatrixWorld(true);
+      const b = new THREE.Box3();
+      g.traverse((o) => {
+        if ((o as THREE.Mesh).isMesh) b.expandByObject(o);
+      });
+      b.getCenter(rifleBox.center);
+      b.getSize(rifleBox.half).multiplyScalar(0.5);
+      rifleBox.ready = true;
+    }
+    const v = new THREE.Vector3((fx() - 0.5) * 1.2, 0.8 + fx(), (fx() - 0.5) * 1.2);
+    if (push) v.add(push);
+    if (s.glint) s.glint.visible = false;
+    s.rifleProp = phys.prop(s.rifle.group, rifleBox.half, {
+      linvel: v,
+      angvel: new THREE.Vector3((fx() - 0.5) * 6, (fx() - 0.5) * 4, (fx() - 0.5) * 6),
+      life: 60,
+      density: 700,
+      center: rifleBox.center,
+      restitution: 0.2,
+      onImpact: (sp) => {
+        const g = s.rifle.group.position;
+        if (sp > 1.5) audio.clatter(camera.position.distanceTo(g), sp);
+      },
+    });
   }
 
   /** Revived ally stands back up, then returns to rifle handling. */
@@ -1596,6 +1687,9 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   function holster(s: Soldier) {
+    if (s.rifleProp && phys) phys.removeProp(s.rifleProp);
+    s.rifleProp = null;
+    s.dropT = 0;
     s.pivot.add(s.rifle.group);
     s.rifle.group.position.set(0, 0, 0.2);
     s.rifle.group.quaternion.identity();
@@ -1703,7 +1797,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         s.body.rotation.z = Math.sin(performance.now() / 700 + s.id) * 0.06;
         const d = wrapAngle(s.faceYaw - s.root.rotation.y);
         s.root.rotation.y += d * Math.min(1, dt * 6);
-      } else {
+      } else if (!s.wreck && s.body.parent !== scene) {
         s.fall += dt;
         s.body.position.y = Math.max(-DRONE_H + 0.28, s.body.position.y - dt * (1 + s.fall * 12));
         if (s.body.position.y > -DRONE_H + 0.3) {
@@ -1953,6 +2047,49 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   const shotDir = new THREE.Vector3();
   const sideV = new THREE.Vector3();
   const upV = new THREE.Vector3();
+  // Brass: pooled meshes thrown out of the ejection port as tiny rigid bodies.
+  const casingGeo = G(new THREE.CylinderGeometry(0.0055, 0.0055, 0.03, 6));
+  const casingMat = M(new THREE.MeshStandardMaterial({ color: 0xc9a046, metalness: 0.9, roughness: 0.3 }));
+  const casingPool: THREE.Mesh[] = [];
+  const casingHalf = new THREE.Vector3(0.006, 0.015, 0.006);
+  let casingLive = 0;
+  function ejectCasing() {
+    if (!phys || !player || casingLive > 36) return;
+    const m = casingPool.pop() ?? new THREE.Mesh(casingGeo, casingMat);
+    m.visible = true;
+    m.castShadow = false;
+    muzzleOf(player, m.position);
+    // back along the barrel, out to the right
+    m.position.addScaledVector(fwd3, -0.42);
+    m.position.addScaledVector(camRight, 0.05);
+    m.position.y += 0.03;
+    m.quaternion.setFromAxisAngle(camRight, Math.PI / 2);
+    scene.add(m);
+    casingLive++;
+    const v = new THREE.Vector3().copy(camRight).multiplyScalar(2 + fx() * 1.2);
+    v.y = 1.6 + fx() * 0.8;
+    v.addScaledVector(fwd3, -0.4).add(player.vel);
+    let bounces = 0;
+    phys.prop(m, casingHalf, {
+      linvel: v,
+      angvel: new THREE.Vector3((fx() - 0.5) * 40, (fx() - 0.5) * 40, (fx() - 0.5) * 40),
+      life: 2.4,
+      density: 8000,
+      ccd: true,
+      restitution: 0.45,
+      friction: 0.5,
+      onImpact: (sp) => {
+        if (bounces++ < 2) audio.casing(sp);
+      },
+      onRemove: () => {
+        m.visible = false;
+        scene.remove(m);
+        casingPool.push(m);
+        casingLive--;
+      },
+    });
+  }
+
   function playerFire() {
     if (!player || !player.alive || fireCd > 0 || reloadT > 0) return;
     if (ammo <= 0) {
@@ -2000,6 +2137,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     muzzleLight.position.copy(muzzleW);
     muzzleLight.intensity = supp ? 4 : 22;
     spawnTracer(muzzleW, impact, 0xffd9a0);
+    ejectCasing();
 
     const unit = hitObj?.userData.unit as Soldier | undefined;
     if (unit && unit.alive && hitObj?.userData.part === "shield") {
@@ -2123,7 +2261,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       e.faceYaw = Math.atan2(src.root.position.x - e.root.position.x, src.root.position.z - e.root.position.z);
       e.root.rotation.y = e.faceYaw;
     }
-    startDeath(e, head);
+    startDeath(e, head, { from: src?.root.position });
     kills += 1;
     const byPlayer = src?.team === "player";
     if (e.kind === "drone") {
@@ -2134,6 +2272,23 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       spawnPuff(tmpV, 0x2a2a2e, 2.4, 1.4, 0.8);
       audio.explode(camera.position.distanceTo(tmpV), panOf(tmpV));
       if (camera.position.distanceTo(tmpV) < 10) shake = Math.min(0.3, shake + 0.15);
+      if (phys) {
+        phys.explode(tmpV, 4.5, 5);
+        // Wreck tumbles out of the sky as a rigid body.
+        const v = new THREE.Vector3(e.vel.x, 1.5, e.vel.z);
+        if (src) v.add(tmpV2.subVectors(tmpV, src.root.position).setY(0).setLength(2.5));
+        e.wreck = phys.prop(e.body, new THREE.Vector3(0.42, 0.14, 0.42), {
+          linvel: v,
+          angvel: new THREE.Vector3((fx() - 0.5) * 8, (fx() - 0.5) * 10, (fx() - 0.5) * 8),
+          life: 60,
+          density: 400,
+          center: new THREE.Vector3(0, DRONE_H, 0),
+          restitution: 0.3,
+          onImpact: (sp) => {
+            if (sp > 2) audio.clatter(camera.position.distanceTo(e.body.position), sp * 2);
+          },
+        });
+      }
     }
     if (byPlayer && e.kind === "heavy") medal("giantslayer");
     if (byPlayer && e.kind === "sniper") medal("countersniper");
@@ -2379,7 +2534,18 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     e.hurtTime += dt;
     if (!e.alive) {
       e.deadTime += dt;
-      if (e.deadTime > 8) e.root.position.y -= dt * 0.35;
+      if (e.ragdoll && e.deadTime > 5.5 && phys) {
+        phys.freeze(e.ragdoll);
+        e.ragdoll = null;
+      }
+      if (e.deadTime > 8) {
+        if (phys && e.rifleProp) phys.removeProp(e.rifleProp);
+        if (phys && e.wreck) phys.removeProp(e.wreck);
+        e.rifleProp = e.wreck = null;
+        e.root.position.y -= dt * 0.35;
+        if (e.rifle.group.parent === scene) e.rifle.group.position.y -= dt * 0.35;
+        if (e.body.parent === scene) e.body.position.y -= dt * 0.35;
+      }
       if (e.deadTime > 10) removeSoldier(e);
       return;
     }
@@ -4224,14 +4390,19 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
             play(s, "Idle", 1, 0.3);
           }
         }
+        if (s.dropT > 0) {
+          s.dropT -= animDt;
+          if (s.dropT <= 0) dropRifle(s);
+        }
         const posing = s.alive && !s.down && !s.deathClip && s.lock <= 0;
-        if (posing || (s.deathClip && s.deadTime < 4) || s.lock > 0) {
+        if (posing || (s.deathClip && s.deathClip !== "ragdoll" && s.deadTime < 4) || s.lock > 0) {
           s.actor.mixer.update(animDt);
           syncRig(s, animDt);
           if (posing) upperBody(s, animDt);
         }
         updateBodyPose(s, animDt);
       }
+      phys?.step(animDt);
     }
     if (stage !== "paused" && stage !== "debrief") {
       updateFx(realDt);
@@ -4294,6 +4465,16 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       setAds: (v: boolean) => (ads = v),
       setFiring: (v: boolean) => (firing = v),
       hurt: (n: number) => player && damage(player, n, enemies[0] ?? null),
+      get phys() {
+        return phys;
+      },
+      rag: (i: number) => {
+        const e = soldiers[i];
+        if (!e || !player) return;
+        e.alive = false;
+        e.hp = 0;
+        startDeath(e, false, { from: player.root.position, ragdoll: true });
+      },
       anim: (i: number, name: string) => {
         const s = soldiers[i];
         if (!s) return;
@@ -4318,6 +4499,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     dispose() {
       if (disposed) return;
       disposed = true;
+      phys?.dispose();
+      phys = null;
       cancelAnimationFrame(raf);
       for (const off of listeners) off();
       ro?.disconnect();
