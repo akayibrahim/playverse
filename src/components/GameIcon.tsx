@@ -38,5 +38,18 @@ export function GameIcon({ slug, className }: { slug: string; className?: string
       </svg>
     );
   }
+  if (slug === "velocity") {
+    return (
+      <svg viewBox="0 0 64 64" fill="none" className={className}>
+        {/* perspektif şerit + hız çizgileri */}
+        <path d="M8 54 L28 18 M56 54 L36 18" stroke="#22d3ee" strokeWidth="2.2" strokeLinecap="round" />
+        <path d="M32 22 V28 M32 34 V42 M32 48 V56" stroke="#f0abfc" strokeWidth="1.8" strokeLinecap="round" />
+        <path d="M6 30 H18 M4 38 H14 M50 26 H60 M52 34 H62" stroke="#f0abfc" strokeWidth="1.2" opacity="0.6" strokeLinecap="round" />
+        <circle cx="27" cy="46" r="3" fill="#22d3ee" />
+        <circle cx="37" cy="46" r="3" fill="#22d3ee" />
+        <path d="M26 41 h12 l-2 -4 h-8 z" fill="#e2e8f0" />
+      </svg>
+    );
+  }
   return null;
 }

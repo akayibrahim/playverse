@@ -51,6 +51,16 @@ export function createAudio() {
   let lowHp = 0;
   let music: Music | null = null;
   let musicVol = 0.6;
+  let engine: {
+    out: GainNode;
+    lp: BiquadFilterNode;
+    o1: OscillatorNode;
+    o2: OscillatorNode;
+    o3: OscillatorNode;
+    wf: BiquadFilterNode;
+    wg: GainNode;
+    nodes: AudioScheduledSourceNode[];
+  } | null = null;
 
   function makeNoise(c: AudioContext, seconds: number, kind: "white" | "brown") {
     const n = Math.floor(c.sampleRate * seconds);
@@ -323,6 +333,88 @@ export function createAudio() {
       burst({ dur: 1.4, type: "lowpass", freq: 1800, freqEnd: 120, gain: 0.35, send: 0.9, attack: 0.04, brown: true });
       osc({ type: "sine", f0: 220, f1: 40, dur: 1.2, gain: 0.25, send: 0.6 });
     },
+    /** Continuous hover-bike engine: call engineSet every frame while racing. */
+    engineStart() {
+      if (!ctx || !sfxBus || !white || engine) return;
+      const c = ctx;
+      const out = c.createGain();
+      out.gain.value = 0;
+      const lp = c.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.value = 900;
+      lp.Q.value = 2;
+      lp.connect(out);
+      out.connect(sfxBus);
+      const o1 = c.createOscillator();
+      o1.type = "sawtooth";
+      const o2 = c.createOscillator();
+      o2.type = "square";
+      const o3 = c.createOscillator();
+      o3.type = "sine";
+      const g1 = c.createGain();
+      g1.gain.value = 0.35;
+      const g2 = c.createGain();
+      g2.gain.value = 0.18;
+      const g3 = c.createGain();
+      g3.gain.value = 0.5;
+      o1.connect(g1).connect(lp);
+      o2.connect(g2).connect(lp);
+      o3.connect(g3).connect(out);
+      const wn = c.createBufferSource();
+      wn.buffer = white;
+      wn.loop = true;
+      const wf = c.createBiquadFilter();
+      wf.type = "bandpass";
+      wf.Q.value = 0.6;
+      const wg = c.createGain();
+      wg.gain.value = 0;
+      wn.connect(wf).connect(wg).connect(sfxBus);
+      for (const o of [o1, o2, o3]) o.start();
+      wn.start();
+      engine = { out, lp, o1, o2, o3, wf, wg, nodes: [o1, o2, o3, wn] };
+    },
+    engineSet(speed01: number, throttle: number, boost: boolean) {
+      if (!ctx || !engine) return;
+      const t = ctx.currentTime;
+      const f = 48 + speed01 * 150 + throttle * 12 + (boost ? 30 : 0);
+      engine.o1.frequency.setTargetAtTime(f, t, 0.05);
+      engine.o2.frequency.setTargetAtTime(f * 1.505, t, 0.05);
+      engine.o3.frequency.setTargetAtTime(f * 0.5, t, 0.05);
+      engine.lp.frequency.setTargetAtTime(500 + speed01 * 2600 + throttle * 600 + (boost ? 1500 : 0), t, 0.06);
+      engine.out.gain.setTargetAtTime(0.1 + throttle * 0.08 + speed01 * 0.06, t, 0.08);
+      engine.wf.frequency.setTargetAtTime(600 + speed01 * 3000, t, 0.1);
+      engine.wg.gain.setTargetAtTime(speed01 * speed01 * 0.16, t, 0.1);
+    },
+    engineStop() {
+      if (!engine) return;
+      for (const n of engine.nodes) {
+        try {
+          n.stop();
+        } catch {
+          /* stopped */
+        }
+      }
+      engine.out.disconnect();
+      engine.wg.disconnect();
+      engine = null;
+    },
+    scrape(k: number) {
+      burst({ dur: 0.12, type: "bandpass", freq: 2400 + Math.random() * 1500, q: 3, gain: Math.min(0.3, 0.08 + k * 0.2) });
+      burst({ dur: 0.08, type: "lowpass", freq: 300, gain: Math.min(0.4, k * 0.3), brown: true });
+    },
+    gate(good: boolean) {
+      osc({ type: "sine", f0: good ? 880 : 520, f1: good ? 1320 : 440, dur: 0.18, gain: 0.1, send: 0.4 });
+    },
+    boost() {
+      burst({ dur: 0.7, type: "bandpass", freq: 600, freqEnd: 4200, q: 1.2, gain: 0.3, send: 0.4, attack: 0.05 });
+      osc({ type: "sawtooth", f0: 90, f1: 260, dur: 0.5, gain: 0.12 });
+    },
+    countdown(go: boolean) {
+      osc({ type: "square", f0: go ? 1320 : 660, f1: go ? 1320 : 660, dur: go ? 0.5 : 0.18, gain: 0.08, send: 0.3 });
+    },
+    pass(pan: number) {
+      burst({ dur: 0.45, type: "bandpass", freq: 1800, freqEnd: 500, q: 1.5, gain: 0.25, pan, send: 0.2, attack: 0.08 });
+    },
     explode(dist: number, pan: number) {
       const g = 0.9 / (1 + dist * 0.05);
       burst({ dur: 0.9, type: "lowpass", freq: 900, freqEnd: 80, gain: g, pan, send: 0.8, brown: true });
@@ -434,6 +526,8 @@ export function createAudio() {
       osc({ type: "sine", f0: 440, f1: 880, dur: 0.3, gain: 0.12, send: 0.4 });
     },
     dispose() {
+      if (engine) for (const n of engine.nodes) { try { n.stop(); } catch { /* */ } }
+      engine = null;
       for (const s of ambient) {
         try {
           s.stop();

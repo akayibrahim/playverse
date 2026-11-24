@@ -45,6 +45,19 @@ export const GAMES: GameMeta[] = [
     features: ["Real ballistics · drop + wind", "Bullet cam", "Three contracts"],
     accent: "#fbbf24",
   },
+  {
+    slug: "velocity",
+    title: "VELOCITY",
+    tagline: "Anti-grav racing on neon sky-lanes, 300 km/h above the megacity.",
+    emoji: "🏍",
+    gradient: "from-fuchsia-500/40 to-cyan-700/40",
+    status: "live",
+    genre: "Anti-grav racer",
+    cover: "/assets/promo/velocity.webp",
+    pitch: "Banked neon lanes two hundred metres above District 07. Drift the corners to charge boost, out-ride five rivals, then chase your own ghost.",
+    features: ["400 km/h boost", "Rivals + ghost", "Two circuits"],
+    accent: "#ff3fc8",
+  },
 ];
 
 export function getGame(slug: string): GameMeta | undefined {
