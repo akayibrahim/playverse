@@ -30,6 +30,7 @@ export type Physics = {
   R: R;
   world: RAPIER_NS.World;
   addStaticBox(box: THREE.Box3): void;
+  clearStatic(): void;
   prop(
     obj: THREE.Object3D,
     half: THREE.Vector3,
@@ -72,6 +73,7 @@ export async function createPhysics(): Promise<Physics | null> {
   world.timestep = 1 / 60;
   const props: Prop[] = [];
   const ragdolls: Ragdoll[] = [];
+  const statics: RAPIER_NS.Collider[] = [];
   let acc = 0;
 
   // ground slab (top at y=0)
@@ -87,7 +89,12 @@ export async function createPhysics(): Promise<Physics | null> {
     const c = box.getCenter(new THREE.Vector3());
     const s = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
     if (s.x <= 0 || s.y <= 0 || s.z <= 0) return;
-    world.createCollider(RAPIER.ColliderDesc.cuboid(s.x, s.y, s.z).setTranslation(c.x, c.y, c.z).setFriction(0.8));
+    statics.push(world.createCollider(RAPIER.ColliderDesc.cuboid(s.x, s.y, s.z).setTranslation(c.x, c.y, c.z).setFriction(0.8)));
+  }
+
+  function clearStatic() {
+    for (const c of statics) world.removeCollider(c, false);
+    statics.length = 0;
   }
 
   function prop(obj: THREE.Object3D, half: THREE.Vector3, o: Parameters<Physics["prop"]>[2]): Prop {
@@ -304,5 +311,5 @@ export async function createPhysics(): Promise<Physics | null> {
     world.free();
   }
 
-  return { R: RAPIER, world, addStaticBox, prop, removeProp, ragdoll, impulseAt, freeze, explode, step, dispose };
+  return { R: RAPIER, world, addStaticBox, clearStatic, prop, removeProp, ragdoll, impulseAt, freeze, explode, step, dispose };
 }

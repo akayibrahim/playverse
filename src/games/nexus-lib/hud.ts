@@ -187,6 +187,21 @@ export const HUD_CSS = `
 .nx-h2{margin-top:10px;font:700 clamp(22px,4vw,34px)/1 var(--sans);letter-spacing:.04em;color:#fff;}
 .nx-sub{margin-top:12px;font:400 13px/1.65 var(--sans);letter-spacing:.01em;text-transform:none;color:#a7b9c6;max-width:420px;}
 .nx-phases{margin-top:20px;display:flex;flex-direction:column;gap:1px;}
+.nx-dist{display:flex;gap:8px;margin-top:14px;}
+.nx-dcard{pointer-events:auto;flex:1;min-width:0;text-align:left;padding:9px 11px;border:1px solid rgba(111,242,227,.18);
+  background:rgba(5,11,17,.55);color:var(--t);cursor:pointer;font:inherit;transition:border-color .15s,background .15s;}
+.nx-dcard b{display:block;font-size:10.5px;letter-spacing:.16em;color:#eef6f8;font-weight:600;}
+.nx-dcard span{display:block;margin-top:3px;font-size:9px;color:var(--d);letter-spacing:.06em;}
+.nx-dcard em{display:block;margin-top:4px;font-style:normal;font-size:8.5px;color:var(--a);letter-spacing:.12em;}
+.nx-dcard.on{border-color:var(--c);background:rgba(20,70,70,.42);}
+.nx-dcard.on b::before{content:"▸ ";color:var(--c);}
+.nx-dcard.lock{opacity:.55;cursor:not-allowed;}
+@media (max-height:900px){
+  .nx-col .nx-phases{margin-top:12px;}
+  .nx-col .nx-phases div{padding:6px 12px;}
+  .nx-col .nx-phases span small{display:none;}
+  .nx-dist{margin-top:10px;}
+}
 .nx-phases div{display:grid;grid-template-columns:34px 1fr;gap:10px;align-items:center;padding:9px 12px;
   background:rgba(255,255,255,.035);border-left:2px solid rgba(111,242,227,.35);}
 .nx-phases b{font:700 15px var(--sans);color:var(--c);letter-spacing:0;}

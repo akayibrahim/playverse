@@ -217,6 +217,52 @@ const WAVE3: Spot[] = [
   [7.6, 30, "sniper"],
 ];
 
+/** Mirror a D-07 layout through the origin (x,z → −x,−z) for the reversed District 12 run. */
+const flipSpots = (w: Spot[]): Spot[] => w.map(([x, z, k]) => (k ? [-x, -z, k] : [-x, -z]) as Spot);
+
+type DistrictId = "d07" | "d12";
+type District = {
+  id: DistrictId;
+  code: string;
+  op: string;
+  tagline: string;
+  brief: string;
+  intro: string;
+  from: string;
+  /** 1 = advance toward −Z (D-07); −1 = the mirrored layout, advancing toward +Z. */
+  flip: 1 | -1;
+  waves: [Spot[], Spot[], Spot[]];
+  look: { exposure: number; bg: number; fog: number; fogColor: number; hemi: number; hemiSky: number; sun: number; sunColor: number; rain: number; rot: number; lampA: number; lampB: number; env: number };
+};
+const DISTRICTS: Record<DistrictId, District> = {
+  d07: {
+    id: "d07",
+    code: "D-07",
+    op: "OPERATION NIGHTFALL",
+    tagline: "Rain-soaked boulevard at dusk",
+    brief:
+      "District 07 has gone dark. Lead a three-operator fireteam down a rain-soaked megacity street, break the hostile cell and upload the evidence before their counter-attack lands.",
+    intro: "Six hostiles patrolling District 07",
+    from: "north",
+    flip: 1,
+    waves: [WAVE1, WAVE2, WAVE3],
+    look: { exposure: 0.95, bg: 0.16, fog: 0.026, fogColor: 0x1d1b2b, hemi: 0.55, hemiSky: 0x7d8fc4, sun: 1.7, sunColor: 0xff9f6a, rain: 0.28, rot: 0.62, lampA: 0xffb66e, lampB: 0x7fd8ff, env: 0.45 },
+  },
+  d12: {
+    id: "d12",
+    code: "D-12",
+    op: "OPERATION BLACKWATER",
+    tagline: "Neon night market · median barricades",
+    brief:
+      "The Blackwater syndicate holds the District 12 night market. Push south through the stalls and the barricaded median, crack their relay and hold the pad while they throw everything at you.",
+    intro: "Syndicate patrols in the night market",
+    from: "south",
+    flip: -1,
+    waves: [flipSpots(WAVE1), flipSpots(WAVE2), flipSpots(WAVE3)],
+    look: { exposure: 0.86, bg: 0.05, fog: 0.031, fogColor: 0x180f28, hemi: 0.42, hemiSky: 0x8a6fd8, sun: 0.55, sunColor: 0x9c8cff, rain: 0.42, rot: 1.5, lampA: 0xff4fd2, lampB: 0x3ff6ff, env: 0.38 },
+  },
+};
+
 const GLB_ENV = [
   "cyberpunk_platform_a",
   "cyberpunk_platform_b",
@@ -339,6 +385,19 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
   let best = hooks.best ?? 0;
   const prog = loadProgress();
+  const DISTRICT_KEY = "playverse:nexusDistrict";
+  const districtUnlocked = (id: DistrictId) => id === "d07" || prog.wins > 0;
+  let D: District = DISTRICTS.d07;
+  let opDistrict: DistrictId = "d07";
+  {
+    const saved = store<{ id: DistrictId }>(DISTRICT_KEY, { id: "d07" }).id;
+    if (DISTRICTS[saved] && districtUnlocked(saved)) D = DISTRICTS[(opDistrict = saved)];
+  }
+  const syncDistrictPoints = () => {
+    SPAWN.set(0, 0, 27 * D.flip);
+    EXTRACT.set(0, 0, -25.5 * D.flip);
+  };
+  syncDistrictPoints();
   const equipped = (slot: Slot) => {
     const id = prog.equip[slot];
     const it = ITEMS[slot].find((i) => i.id === id);
@@ -559,14 +618,6 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     scene.add(e);
   }
   const zebraGeo = G(new THREE.PlaneGeometry(0.55, 3));
-  for (const zc of [17.5, -9]) {
-    for (let x = -5.2; x <= 5.2; x += 1.1) {
-      const s = new THREE.Mesh(zebraGeo, lineMat);
-      s.rotation.x = -Math.PI / 2;
-      s.position.set(x, 0.013, zc);
-      scene.add(s);
-    }
-  }
 
   // ------------------------------------------------------------- rain
   const RAIN = mobile ? 500 : 1500;
@@ -890,9 +941,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         return;
       }
       phys = p;
-      for (const b of solidBoxes) p.addStaticBox(b);
-      // raised sidewalks either side of the road
-      for (const sx of [-1, 1]) p.addStaticBox(new THREE.Box3(new THREE.Vector3(sx > 0 ? ROAD_HALF + 0.1 : -80, -0.5, -120), new THREE.Vector3(sx > 0 ? 80 : -ROAD_HALF - 0.1, 0.12, 120)));
+      addPhysicsStatics(p);
     });
     resetMission();
     renderer.compile(scene, camera);
@@ -902,6 +951,25 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   // ---------------------------------------------------------- world build
   const blockerGeo = G(new THREE.BoxGeometry(1, 1, 1));
   const blockerMat = M(new THREE.MeshBasicMaterial({ visible: false }));
+  // Everything district-specific lives under worldRoot (rotated 180° for the mirrored D-12 run).
+  const worldRoot = new THREE.Group();
+  scene.add(worldRoot);
+  let envSrc: Array<THREE.Group | null> = [];
+
+  function addPhysicsStatics(p: Physics) {
+    for (const b of solidBoxes) p.addStaticBox(b);
+    // raised sidewalks either side of the road
+    for (const sx of [-1, 1]) p.addStaticBox(new THREE.Box3(new THREE.Vector3(sx > 0 ? ROAD_HALF + 0.1 : -80, -0.5, -120), new THREE.Vector3(sx > 0 ? 80 : -ROAD_HALF - 0.1, 0.12, 120)));
+  }
+
+  function clearWorld() {
+    worldRoot.clear();
+    for (const b of blockers) scene.remove(b);
+    blockers.length = 0;
+    solidBoxes.length = 0;
+    coverPoints.length = 0;
+  }
+
   function addBlocker(box: THREE.Box3) {
     const b = box.clone();
     b.min.y = 0;
@@ -932,7 +1000,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     wrap.add(inst);
     wrap.position.copy(pos);
     wrap.rotation.y = rotY;
-    scene.add(wrap);
+    worldRoot.add(wrap);
     wrap.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(wrap);
     if (solid) addBlocker(box);
@@ -960,23 +1028,37 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   }
 
   function buildWorld(env: Array<THREE.Group | null>) {
+    envSrc = env;
     const at = (i: number) => env[i] ?? null;
     for (const i of [0, 1, 2, 3, 6]) {
       const s = at(i);
       if (s) glowNeon(s);
     }
     crateSrc = at(7);
+    const d12 = D.id === "d12";
+    const rng = mulberry32(d12 ? 1212 : 707);
+    worldRoot.rotation.y = D.flip === 1 ? 0 : Math.PI;
+    worldRoot.updateMatrixWorld(true);
+
+    for (const zc of [17.5, -9]) {
+      for (let x = -5.2; x <= 5.2; x += 1.1) {
+        const z = new THREE.Mesh(zebraGeo, lineMat);
+        z.rotation.x = -Math.PI / 2;
+        z.position.set(x, 0.013, zc);
+        worldRoot.add(z);
+      }
+    }
 
     // Facade corridor.
     const zRow = [-30, -22, -14, -6, 2, 10, 18, 26, 33];
     for (const side of [-1, 1]) {
       for (let i = 0; i < zRow.length; i++) {
         if (side === 1 && i === 3) continue; // side alley (reinforcement entry)
-        const src = at((i + (side < 0 ? 0 : 2)) % 4);
+        const src = at((i + (side < 0 ? 0 : 2) + (d12 ? 1 : 0)) % 4);
         if (!src) continue;
         const x = side * (10.4 + rng() * 0.8);
         const z = zRow[i] + (rng() - 0.5) * 1.2;
-        placeEnv(src, new THREE.Vector3(x, 0, z), 1.9 + rng() * 0.7, side < 0 ? Math.PI / 2 : -Math.PI / 2, true);
+        placeEnv(src, new THREE.Vector3(x, 0, z), (d12 ? 2.3 : 1.9) + rng() * 0.7, side < 0 ? Math.PI / 2 : -Math.PI / 2, true);
       }
     }
     // End caps close the street so the corridor never opens into the void.
@@ -1007,12 +1089,12 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       }
     }
     lampSpots.forEach((l, i) => {
-      const color = l.warm ? 0xffb66e : 0x7fd8ff;
+      const color = l.warm ? D.look.lampA : D.look.lampB;
       const head = new THREE.Vector3(l.x * 0.92, 3.55, l.z);
       if (i % 2 === 0) {
         const light = new THREE.PointLight(color, l.warm ? 18 : 14, 14, 1.8);
         light.position.copy(head);
-        scene.add(light);
+        worldRoot.add(light);
       }
       const cone = new THREE.Mesh(
         coneGeo,
@@ -1029,19 +1111,19 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         ),
       );
       cone.position.copy(head);
-      scene.add(cone);
+      worldRoot.add(cone);
       const glow = new THREE.Sprite(
         M(new THREE.SpriteMaterial({ map: dotTex, color, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false })),
       );
       glow.position.copy(head);
       glow.scale.setScalar(0.9);
-      scene.add(glow);
+      worldRoot.add(glow);
     });
 
     const signSrc = at(6);
     if (signSrc) {
       for (const side of [-1, 1]) {
-        for (const z of [-18, 0, 15]) {
+        for (const z of d12 ? [-24, -9, 4, 16, 27] : [-18, 0, 15]) {
           placeEnv(signSrc, new THREE.Vector3(side * 8.7, 3 + rng() * 0.8, z), 0.95 + rng() * 0.3, side < 0 ? Math.PI / 2 : -Math.PI / 2, false);
         }
       }
@@ -1073,6 +1155,32 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       const box = placeEnv(src, new THREE.Vector3(x, 0, z), s, r, false);
       streetBoxes.push(addBlocker(box));
     }
+    if (d12) {
+      // Night market: barricaded median, stall crates and coloured neon washes.
+      const rail = at(10);
+      if (rail) for (const z of [12, -11.5]) streetBoxes.push(addBlocker(placeEnv(rail, new THREE.Vector3(0, 0, z), 1.25, Math.PI / 2, false)));
+      const panel = at(9);
+      if (panel) addBlocker(placeEnv(panel, new THREE.Vector3(0, 0, 0.6), 0.9, 0, false));
+      const crate = at(7);
+      if (crate) {
+        for (const [x, z, r] of [
+          [-5.2, 14, 0.3],
+          [5.0, 12, -0.2],
+          [-5.0, -8.4, 0.5],
+          [5.0, -21, 0],
+          [-4.6, 24.5, 0.1],
+        ]) streetBoxes.push(addBlocker(placeEnv(crate, new THREE.Vector3(x, 0, z), 1.6, r, false)));
+      }
+      for (const [x, z, c] of [
+        [-4.5, 6, 0xff3fc8],
+        [4.5, -13, 0x35f0ff],
+        [0, 22, 0x9a5cff],
+      ]) {
+        const l = new THREE.PointLight(c, 22, 13, 1.8);
+        l.position.set(x, 3.2, z);
+        worldRoot.add(l);
+      }
+    }
     const railSrc = at(10);
     if (railSrc) {
       for (const [x, z] of [
@@ -1100,7 +1208,9 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   // ----------------------------------------------------------- navigation
   function blockedAt(x: number, z: number, r: number) {
     if (Math.abs(z) > WORLD_HALF - 0.6) return true;
-    const alley = z > -8.2 && z < -2.4 && x > 0;
+    const lx = x * D.flip;
+    const lz = z * D.flip;
+    const alley = lz > -8.2 && lz < -2.4 && lx > 0;
     if (Math.abs(x) > (alley ? 14.5 : 9.3)) return true;
     for (const b of solidBoxes) {
       if (x > b.min.x - r && x < b.max.x + r && z > b.min.z - r && z < b.max.z + r) return true;
@@ -1864,7 +1974,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     damageFlash = 0;
     lastHurt = 99;
     quietTime = 0;
-    yaw = Math.PI;
+    yaw = D.flip === 1 ? Math.PI : 0;
     pitch = -0.03;
     recoil = recoilYaw = 0;
     ads = false;
@@ -1910,19 +2020,19 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     beamMat.opacity = 0;
 
     player = spawnSoldier("player", SPAWN.clone(), "YOU");
-    if (player) player.faceYaw = player.root.rotation.y = Math.PI;
+    if (player) player.faceYaw = player.root.rotation.y = yaw;
     const off: Array<[number, number]> = [
-      [-1.8, 2],
-      [1.9, 2.8],
+      [-1.8 * D.flip, 2 * D.flip],
+      [1.9 * D.flip, 2.8 * D.flip],
     ];
     ALLY_NAMES.forEach((n, i) => {
       const a = spawnSoldier("ally", new THREE.Vector3(SPAWN.x + off[i][0], 0, SPAWN.z + off[i][1]), n);
       if (a) {
-        a.faceYaw = a.root.rotation.y = Math.PI;
+        a.faceYaw = a.root.rotation.y = yaw;
         allies.push(a);
       }
     });
-    spawnWave(mode === "daily" ? shuffleSpots(WAVE1, dailyOf(todayUTC()).seed) : WAVE1, false);
+    spawnWave(mode === "daily" ? shuffleSpots(D.waves[0], dailyOf(todayUTC()).seed) : D.waves[0], false);
     buildSquadHud();
     setObjective();
     updateHud(true);
@@ -1937,13 +2047,21 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     mod.regen = id !== "ironman";
     mod.enemyAcc = id === "blitz" ? 1.25 : 1;
     mod.reaction = id === "blitz" ? 0.6 : 1;
-    renderer.toneMappingExposure = mod.night ? 0.8 : 0.95;
-    scene.backgroundIntensity = mod.night ? 0.03 : 0.16;
-    (scene.fog as THREE.FogExp2).density = mod.night ? 0.034 : 0.026;
-    hemi.intensity = mod.night ? 0.32 : 0.55;
-    sun.intensity = mod.night ? 0.45 : 1.7;
-    sun.color.setHex(mod.night ? 0x7d92d6 : 0xff9f6a);
-    rainMat.opacity = mod.night ? 0.4 : 0.28;
+    const L = D.look;
+    renderer.toneMappingExposure = mod.night ? Math.min(0.8, L.exposure) : L.exposure;
+    scene.backgroundIntensity = mod.night ? Math.min(0.03, L.bg) : L.bg;
+    const fog = scene.fog as THREE.FogExp2;
+    fog.density = mod.night ? Math.max(0.034, L.fog) : L.fog;
+    fog.color.setHex(L.fogColor);
+    if (scene.background instanceof THREE.Color) scene.background.setHex(L.fogColor);
+    hemi.intensity = mod.night ? Math.min(0.32, L.hemi) : L.hemi;
+    hemi.color.setHex(L.hemiSky);
+    sun.intensity = mod.night ? Math.min(0.45, L.sun) : L.sun;
+    sun.color.setHex(mod.night ? 0x7d92d6 : L.sunColor);
+    rainMat.opacity = mod.night ? Math.max(0.4, L.rain) : L.rain;
+    scene.environmentIntensity = L.env;
+    scene.backgroundRotation.set(0, Math.PI * L.rot, 0);
+    scene.environmentRotation.set(0, Math.PI * L.rot, 0);
   }
 
   /** Daily layout: deterministic jitter of the patrol positions. */
@@ -2015,7 +2133,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       phase = 2;
       pendingWave = 2;
       phaseTimer = 3.2;
-      banner("PHASE 2 / 3", "REINFORCEMENTS INBOUND", "Hostile squad entering from the north end", true, 3.2);
+      banner("PHASE 2 / 3", "REINFORCEMENTS INBOUND", `Hostile squad entering from the ${D.from} end`, true, 3.2);
       audio.alarm();
     } else if (phase === 2) {
       phase = 3;
@@ -3472,7 +3590,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         uplinkStarted = true;
         banner("UPLINK STARTED", "HOLD THE PAD", "Enemy counter-attack incoming", true, 2.6);
         audio.alarm();
-        spawnWave(WAVE3, true);
+        spawnWave(D.waves[2], true);
       }
       if (onPad) uplink = Math.min(1, uplink + dt / UPLINK_TIME);
       if (uplink >= 1) finishMission(true);
@@ -3553,15 +3671,16 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   function menuCamera(dt: number) {
     menuTime += dt;
     const t = menuTime * 0.05;
-    camera.position.set(Math.sin(t) * 3.5 + 2.5, 2.6 + Math.sin(t * 0.7) * 0.4, 33 - Math.sin(t * 0.6) * 2);
-    camLook.set(-1.5 + Math.sin(t * 0.8), 1.7, 12);
+    const f = D.flip;
+    camera.position.set(f * (Math.sin(t) * 3.5 + 2.5), 2.6 + Math.sin(t * 0.7) * 0.4, f * (33 - Math.sin(t * 0.6) * 2));
+    camLook.set(f * (-1.5 + Math.sin(t * 0.8)), 1.7, f * 12);
     camera.lookAt(camLook);
     if (Math.abs(camera.fov - 55) > 0.05) {
       camera.fov = 55;
       camera.updateProjectionMatrix();
     }
-    sun.position.set(18, 26, -10);
-    sun.target.position.set(0, 0, 20);
+    sun.position.set(18, 26, -10 * D.flip);
+    sun.target.position.set(0, 0, 20 * D.flip);
   }
 
   function aimAssist(dt: number) {
@@ -3962,10 +4081,18 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     hud.overlay.innerHTML = `<div class="nx-col">
       <div class="nx-kick">PLAYVERSE // TACTICAL SIMULATION</div>
       <div class="nx-h1">NEXUS <span>2100</span></div>
-      <div class="nx-sub">Operation Nightfall. District 07 has gone dark. Lead a three-operator fireteam down a rain-soaked megacity street, break the hostile cell and upload the evidence before their counter-attack lands.</div>
+      <div class="nx-sub">${esc(DISTRICTS[opDistrict].brief)}</div>
+      <div class="nx-dist">${(Object.keys(DISTRICTS) as DistrictId[])
+        .map((id) => {
+          const d = DISTRICTS[id];
+          const lock = !districtUnlocked(id);
+          return `<button type="button" class="nx-dcard${id === opDistrict ? " on" : ""}${lock ? " lock" : ""}" data-dist="${id}" ${lock ? "disabled" : ""}>
+            <b>${d.code} · ${d.op.replace("OPERATION ", "")}</b><span>${esc(d.tagline)}</span>${lock ? "<em>🔒 COMPLETE ANY OPERATION</em>" : ""}</button>`;
+        })
+        .join("")}</div>
       <div class="nx-phases">
         <div><b>01</b><span>CLEAR THE STREET<small>Five riflemen and a sniper on patrol. Strike before they raise the alarm.</small></span></div>
-        <div><b>02</b><span>REPEL REINFORCEMENTS<small>A shielded heavy and attack drones push in from the north end.</small></span></div>
+        <div><b>02</b><span>REPEL REINFORCEMENTS<small>A shielded heavy and attack drones push in from the ${DISTRICTS[opDistrict].from} end.</small></span></div>
         <div><b>03</b><span>HOLD THE UPLINK<small>Stand on the pad for ${UPLINK_TIME}s while they counter-attack.</small></span></div>
       </div>
       ${rankHtml()}
@@ -3978,6 +4105,18 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       <div class="nx-setwrap" style="display:none">${settingsHtml()}${controlsHtml()}</div>
     </div>`;
     bindSettings();
+    hud.overlay.querySelectorAll<HTMLButtonElement>(".nx-dcard").forEach((b) => {
+      b.addEventListener("click", () => {
+        const id = b.dataset.dist as DistrictId;
+        if (b.disabled || id === opDistrict) return;
+        audio.ensure();
+        audio.ui();
+        opDistrict = id;
+        save(DISTRICT_KEY, { id });
+        if (mode === "op" && setDistrict(id)) resetMission();
+        showMenu();
+      });
+    });
     bindButtons({
       deploy: () => deploy("op"),
       daily: () => deploy("daily"),
@@ -4001,11 +4140,32 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
 
   function deploy(m: Mode) {
     mobileFullscreen();
-    if (m !== mode) {
+    const changed = setDistrict(m === "daily" ? dailyDistrict() : opDistrict);
+    if (m !== mode || changed) {
       mode = m;
       resetMission();
     }
     startPlay();
+  }
+
+  /** Daily ops alternate districts by date so everyone gets the same map. */
+  function dailyDistrict(): DistrictId {
+    return (dailyOf(todayUTC()).seed >>> 5) % 2 === 0 ? "d07" : "d12";
+  }
+
+  /** Swap the street layout + lighting. Returns true if the world was rebuilt. */
+  function setDistrict(id: DistrictId) {
+    if (D.id === id || !envSrc.length) return false;
+    D = DISTRICTS[id];
+    syncDistrictPoints();
+    clearWorld();
+    buildWorld(envSrc);
+    extract.position.copy(EXTRACT);
+    if (phys) {
+      phys.clearStatic();
+      addPhysicsStatics(phys);
+    }
+    return true;
   }
 
   function dailyCardHtml() {
@@ -4191,7 +4351,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     if (mode === "daily") {
       const d = dailyOf(todayUTC());
       banner(`DAILY OPS · ${d.date}`, d.mod.name, d.mod.desc, false, 3.4);
-    } else banner("OPERATION NIGHTFALL", "CLEAR THE STREET", "Six hostiles patrolling District 07", false, 3);
+    } else banner(D.op, "CLEAR THE STREET", D.intro, false, 3);
     requestLock();
   }
 
@@ -4205,7 +4365,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     audio.pause(true);
     hud.overlay.className = "nx-ov dim on";
     hud.overlay.innerHTML = `<div class="nx-center"><div class="nx-kick">SIMULATION PAUSED</div>
-      <div class="nx-h2">OPERATION NIGHTFALL</div>
+      <div class="nx-h2">${D.op}</div>
       <div class="nx-tiny">PHASE ${phase}/3 · ${formatTime(elapsed)} · ${kills} KILLS</div>
       <div style="max-width:360px;margin:18px auto 0;text-align:left">${settingsHtml()}</div>
       <div class="nx-actions" style="margin-top:22px"><button type="button" class="nx-btn" data-go="resume">RESUME</button>
@@ -4305,7 +4465,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     hud.overlay.className = "nx-ov dim on";
     hud.overlay.innerHTML = `<div class="nx-center deb">
       <div class="nx-kick ${success ? "" : "r"}">${success ? "MISSION COMPLETE" : "OPERATOR KIA — MISSION FAILED"}</div>
-      <div class="nx-h2">${mode === "daily" ? `DAILY OPS · ${dailyOf(todayUTC()).mod.name}` : "OPERATION NIGHTFALL"}</div>
+      <div class="nx-h2">${mode === "daily" ? `DAILY OPS · ${dailyOf(todayUTC()).mod.name}` : D.op}</div>
       <div class="nx-deb"><div class="l">
       <div class="nx-grade ${success ? "" : "f"}">${g}</div>
       <div class="nx-score">${total.toLocaleString("en-US")}</div>
@@ -4825,7 +4985,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
       if (pendingWave) {
         phaseTimer -= realDt;
         if (phaseTimer <= 0) {
-          spawnWave(WAVE2, true);
+          spawnWave(D.waves[1], true);
           pendingWave = 0;
         }
       } else if (phase === 2 && hostilesLeft() === 0) {
