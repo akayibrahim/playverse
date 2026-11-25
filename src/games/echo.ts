@@ -1928,6 +1928,19 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   .ec-board .tip{margin-top:8px;font-size:8.5px;color:var(--d);letter-spacing:.16em;}
   .ec-board:not(.open) li em{display:none;}
   .ec-board.open{right:50%;top:50%;transform:translate(50%,-50%);width:min(560px,calc(100% - 32px));z-index:6;max-height:calc(100% - 40px);overflow:auto;}
+  .ec-pins{position:absolute;inset:0;pointer-events:none;z-index:2;overflow:hidden;}
+  .ls-root.bulletcam .ec-pins{display:none;}
+  .ec-pin{position:absolute;left:0;top:0;display:none;flex-direction:column;align-items:center;transform:translate(-50%,-100%);will-change:transform;}
+  .ec-pin.on{display:flex;}
+  .ec-pin .lb{padding:3px 7px;font:700 10px var(--sans);letter-spacing:.14em;color:#1a1206;background:var(--a);white-space:nowrap;box-shadow:0 0 14px rgba(255,181,71,.6);}
+  .ec-pin .lb small{font-weight:500;opacity:.75;margin-left:6px;}
+  .ec-pin .dm{width:14px;height:14px;margin-top:4px;border:2px solid var(--a);transform:rotate(45deg);animation:ecPin 0.9s ease-in-out infinite;}
+  .ec-pin.live .lb{background:#fff1d6;animation:nxPulse .6s infinite;}
+  .ec-pin.edge .dm{display:none;}
+  .ec-pin.edge .lb::before{content:attr(data-arrow);margin-right:6px;}
+  .ec-pin.sus .lb{background:var(--r);color:#fff;box-shadow:0 0 14px rgba(255,59,78,.7);}
+  .ec-pin.sus .dm{border-color:var(--r);}
+  @keyframes ecPin{0%,100%{transform:rotate(45deg) scale(1);opacity:1}50%{transform:rotate(45deg) scale(1.35);opacity:.55}}
   .ec-who{position:absolute;left:50%;top:calc(50% + min(46vw,46vh)*0.36);transform:translateX(-50%);font-size:10px;letter-spacing:.24em;color:#f2e6cf;
     text-shadow:0 0 6px #000;display:none;white-space:nowrap;}
   .ls-root.scoped .ec-who{display:block;}
@@ -1979,6 +1992,17 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
   const ecWho = document.createElement("div");
   ecWho.className = "ec-who";
   hud.root.appendChild(ecWho);
+  const ecPins = document.createElement("div");
+  ecPins.className = "ec-pins";
+  hud.root.appendChild(ecPins);
+  const pinEls = new Map<string, HTMLElement>();
+  for (const id of [...EVENTS.map((e) => e.id), "suspect"]) {
+    const el = document.createElement("div");
+    el.className = "ec-pin" + (id === "suspect" ? " sus" : "");
+    el.innerHTML = `<div class="lb"></div><div class="dm"></div>`;
+    ecPins.appendChild(el);
+    pinEls.set(id, el);
+  }
   const ecFx = document.createElement("div");
   ecFx.className = "ec-fx";
   ecFx.innerHTML = "<b>◀◀ REWIND</b>";
@@ -2228,6 +2252,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     bullets.length = 0;
     delayed.length = 0;
     hud.root.classList.remove("glitch");
+    alerted.clear();
     feed(`LOOP ${loops} · <u>${found.size}/${EVENTS.length} CLUES</u>`, "");
     renderBoard();
   }
@@ -2274,20 +2299,82 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
 
   // clues: witnessed through the scope while they happen
   const projV = new THREE.Vector3();
+  const CLUE_GRACE = 2;
   function detectClues(dt: number) {
-    if (!scoped || rewinding || collapseT > 0) return;
+    if (rewinding || collapseT > 0 || cam) return;
+    // scoped: anywhere in most of the scope; unscoped: the event must be near the centre of the view
+    const lim = scoped ? 0.9 : 0.22;
     for (const ev of EVENTS) {
-      if (found.has(ev.id) || loopT < ev.t0 || loopT > ev.t1) continue;
+      if (found.has(ev.id) || loopT < ev.t0 - 0.5 || loopT > ev.t1 + CLUE_GRACE) continue;
       const inView = ev.actors.some((id) => {
         const c = byId.get(id);
         if (!c) return false;
         projV.copy(c.u.root.position).setY(1.4).project(camera);
-        return projV.z < 1 && Math.abs(projV.x) < 0.62 && Math.abs(projV.y) < 0.62;
+        return projV.z < 1 && Math.abs(projV.x) < lim && Math.abs(projV.y) < lim;
       });
       if (!inView) continue;
-      seenT[ev.id] = (seenT[ev.id] ?? 0) + dt * (ff ? 0.25 : 1);
-      if (seenT[ev.id] > 0.7) discover(ev.id);
+      seenT[ev.id] = (seenT[ev.id] ?? 0) + dt;
+      if (seenT[ev.id] > 0.35) discover(ev.id);
     }
+  }
+
+  // on-screen pins: where the next clue will happen, plus the suspect once the case points at them
+  const PIN_LEAD = 6;
+  const pinV = new THREE.Vector3();
+  const alerted = new Set<string>();
+  function placePin(el: HTMLElement, world: THREE.Vector3, text: string, live: boolean) {
+    pinV.copy(world).project(camera);
+    const behind = pinV.z > 1;
+    let x = pinV.x;
+    let y = pinV.y;
+    if (behind) {
+      x = -x;
+      y = -y;
+    }
+    const m = 0.88;
+    const off = behind || Math.abs(x) > m || Math.abs(y) > m;
+    if (off) {
+      const k = m / Math.max(Math.abs(x), Math.abs(y), 1e-3);
+      x *= k;
+      y *= k;
+    }
+    const px = (x * 0.5 + 0.5) * viewW;
+    const py = (-y * 0.5 + 0.5) * viewH;
+    el.style.transform = `translate(${px.toFixed(1)}px,${py.toFixed(1)}px) translate(-50%,-100%)`;
+    el.classList.add("on");
+    el.classList.toggle("edge", off);
+    el.classList.toggle("live", live);
+    const arrow = Math.abs(x) > Math.abs(y) ? (x > 0 ? "▶" : "◀") : y > 0 ? "▲" : "▼";
+    const lb = el.firstElementChild as HTMLElement;
+    if (lb.dataset.arrow !== arrow) lb.dataset.arrow = arrow;
+    if (lb.innerHTML !== text) lb.innerHTML = text;
+  }
+  function updatePins() {
+    const show = stage === "playing" && !cam && !solved && collapseT <= 0 && !boardOpen;
+    for (const ev of EVENTS) {
+      const el = pinEls.get(ev.id)!;
+      const active = show && !found.has(ev.id) && loopT >= ev.t0 - PIN_LEAD && loopT <= ev.t1 + CLUE_GRACE;
+      if (!active) {
+        el.classList.remove("on");
+        continue;
+      }
+      const c = byId.get(ev.actors[0]);
+      if (!c) continue;
+      const live = loopT >= ev.t0;
+      if (!live && !rewinding && !alerted.has(ev.id)) {
+        alerted.add(ev.id);
+        feed(`HEADS UP · <u>${esc(ev.place)}</u>`, "hs");
+        audio.scope(true);
+      }
+      const text = live ? `WATCH · ${esc(ev.title)}` : `${esc(ev.place.split(" · ")[0])}<small>${Math.ceil(ev.t0 - loopT)}s</small>`;
+      placePin(el, pinV.copy(c.u.root.position).setY(2.3), text, live);
+    }
+    const sus = pinEls.get("suspect")!;
+    const olive = byId.get("olive")?.u;
+    const known = found.has("awning") || found.has("aim") || (found.has("switch") && found.size >= 3);
+    if (show && known && olive?.alive && loopT < KILL_T) {
+      placePin(sus, pinV.copy(olive.root.position).setY(2.3), "SUSPECT · OLIVE COAT", loopT > AIM_T - 4);
+    } else sus.classList.remove("on");
   }
   function discover(id: string) {
     const ev = EVENTS.find((e) => e.id === id)!;
@@ -2305,7 +2392,7 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
   }
   function renderBoard() {
-    const hints = deaths > 0;
+    const hints = true;
     ecBoard.innerHTML = `<div class="k"><span>CASE BOARD · ${CASE_TITLE}</span><b>${found.size}/${EVENTS.length}</b></div>
       <ul>${EVENTS.map((e) => {
         const on = found.has(e.id);
@@ -2656,8 +2743,8 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
     }
     if (hintStep < 4 && stage === "playing") {
       const tips = mobile
-        ? ["<span>TAP <kbd>SCOPE</kbd> AND WATCH THE STREET</span>", "<span>HOLD <kbd>◀◀</kbd> TO REWIND · <kbd>▶▶</kbd> TO FAST-FORWARD</span>", "<span>FOLLOW THE <b>AMBER CASE</b></span>", ""]
-        : ["<span><kbd>RMB</kbd>/<kbd>Q</kbd> SCOPE — WATCH THE STREET</span>", "<span>HOLD <kbd>R</kbd> REWIND · HOLD <kbd>E</kbd> FAST-FORWARD · <kbd>TAB</kbd> CASE BOARD</span>", "<span>FOLLOW THE <b>AMBER CASE</b></span>", ""];
+        ? ["<span>TAP <kbd>SCOPE</kbd> AND WATCH THE STREET</span>", "<span>HOLD <kbd>◀◀</kbd> TO REWIND · <kbd>▶▶</kbd> TO FAST-FORWARD</span>", "<span>FOLLOW THE <b>AMBER CASE</b> · WATCH THE <b>◆ PINS</b></span>", ""]
+        : ["<span><kbd>RMB</kbd>/<kbd>Q</kbd> SCOPE — WATCH THE STREET</span>", "<span>HOLD <kbd>R</kbd> REWIND · HOLD <kbd>E</kbd> FAST-FORWARD · <kbd>TAB</kbd> CASE BOARD</span>", "<span>FOLLOW THE <b>AMBER CASE</b> · WATCH THE <b>◆ PINS</b></span>", ""];
       if (hintStep === 0 && scoped) hintStep = 1;
       if (hintStep === 1 && (rewinding || ff)) hintStep = 2;
       const html = tips[Math.min(hintStep, 3)];
@@ -3040,8 +3127,9 @@ export function createGame(container: HTMLElement, hooks: GameHooks): GameInstan
         rangeAcc = 0;
         updateRange();
       }
-      detectClues(realDt);
     }
+    if (stage === "playing") detectClues(realDt);
+    updatePins();
     if (solved && !cam) {
       solvedT += realDt;
       if (solvedT > 1.6 && stage === "playing") showResults();
