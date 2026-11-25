@@ -1,48 +1,55 @@
 # Playverse
 
-Mobil ve web'de tarayıcı üzerinden oynanan, basit ama görsel olarak etkili 3D mini oyunlar sitesi.
+**Four browser games set in one neon megacity — District 07.** No install, no plugins: they run
+in any modern browser on desktop and mobile, and the site installs as an app (PWA).
 
-## Stack
+**▶ Play: https://playverse-rose.vercel.app**
 
-- **Next.js (App Router) + TypeScript + Tailwind** — Vercel'e tek komutla deploy
-- **three.js** — 3D oyun motoru
-- **Skor / favoriler** — Faz 1'de tamamen `localStorage` (DB yok); Faz 2'de leaderboard için Neon Postgres veya Upstash eklenecek
+| | Game | Genre |
+| --- | --- | --- |
+| ![NEXUS 2100](public/assets/promo/nexus.webp) | **NEXUS 2100** | Squad tactical shooter: lead a four-operator squad through the city, with physics ragdolls and a global daily leaderboard. |
+| ![LONGSHOT](public/assets/promo/longshot.webp) | **LONGSHOT** | Sniper: one rooftop nest, real bullet drop and wind, holdover reticle, bullet cam. |
+| ![VELOCITY](public/assets/promo/velocity.webp) | **VELOCITY** | Anti-grav racer: banked sky-lanes, drift-to-boost, five AI rivals, ghost of your best lap. |
+| ![ECHO](public/assets/promo/echo.webp) | **ECHO** | Time-loop mystery: a 90-second loop ends in an assassination. Rewind, watch, find the shooter, one round per loop. |
 
-## Yapı
+## Tech
+
+- **Next.js** (App Router) + TypeScript + Tailwind, deployed on Vercel
+- **three.js** for rendering: PBR triplanar surfaces, HDR lighting, bloom and colour-grade post-processing, instanced cities
+- **Rapier** (WASM) for physics and ragdolls
+- **WebAudio**: every sound effect and the music are synthesised at runtime; there are no audio files
+- **Upstash Redis** (optional) for the NEXUS leaderboard. Everything else lives in `localStorage`
+- PWA: web manifest with per-game shortcuts, and a service worker that caches the static assets
+
+## Run locally
+
+```bash
+npm install
+npm run dev        # http://localhost:3000
+npm run build && npm start
+```
+
+The NEXUS leaderboard needs `KV_REST_API_URL` and `KV_REST_API_TOKEN` (Upstash/Vercel KV). Without
+them, development uses an in-memory board and production returns 503.
+
+## Layout
 
 ```
 src/
-  app/
-    page.tsx              # Oyun hub'ı (kartlar, favoriler, en iyi skorlar)
-    games/[slug]/page.tsx # Oyun sayfası
-  components/
-    GameGrid.tsx          # Hub kartları (client, favoriler + skorlar)
-    GameStage.tsx         # SSR'siz sahne yükleyici
-    StageCanvas.tsx       # Ortak canvas + HUD + skor yönetimi
+  app/                 # hub page, /games/[slug], /api/scores, manifest
+  components/          # GameGrid, GameStage (client-only loader), icons
+  lib/games.ts         # game registry: add an entry here to put a game on the hub
   games/
-    runner.ts             # Oyun modülü: createGame(container) => { dispose }
-  lib/
-    games.ts              # Oyun kayıt defteri (yeni oyun buraya eklenir)
-    storage.ts            # localStorage: skor, favori, nickname
+    nexus.ts      nexus-lib/      # shared: audio, physics, rig, surfaces, textures, HUD
+    longshot.ts   longshot-lib/
+    velocity.ts   velocity-lib/
+    echo.ts       echo-lib/
+public/assets/         # models, environment kit, HDRI, PBR textures (see ASSETS.md)
 ```
 
-## Yeni oyun ekleme
+A game is a module that exports `createGame(container, hooks)` and returns an instance with `dispose()`.
 
-1. `src/games/<slug>.ts` yaz — imza: `createGame(container: HTMLElement) => { dispose(): void }`
-2. `src/lib/games.ts`'e meta ekle (`status: "live"` yap)
-3. Kart ve sayfa otomatik çalışır
+## License
 
-## Komutlar
-
-```bash
-npm run dev    # geliştirme
-npm run build  # prod build
-npx vercel     # deploy
-```
-
-## Yol haritası
-
-- [x] İskelet: hub + oyun sayfası + storage modülü + logo
-- [ ] Neon Runner: gerçek oyun mekaniği (swipe ile şerit değiştirme, çarpışma, skor)
-- [ ] Leaderboard (Neon Postgres + `/api/scores`)
-- [ ] Admin mini-dashboard (istatistik, tek kullanıcılı auth)
+The code is under the [MIT](LICENSE) license. The 3D models, textures and HDRI in `public/assets/` keep
+their own licenses (mostly CC0 by Quaternius and Poly Haven). See [ASSETS.md](public/assets/ASSETS.md).
