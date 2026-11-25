@@ -19,9 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Third-party assets in `public/assets/` are NOT covered by this license. Each keeps
-its own license, listed in `public/assets/ASSETS.md` (mostly CC0 1.0; `models/soldier.glb`
-is a Mixamo character distributed with the three.js examples under Adobe's Mixamo terms).
