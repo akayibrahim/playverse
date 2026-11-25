@@ -63,5 +63,44 @@ export function GameIcon({ slug, className }: { slug: string; className?: string
       </svg>
     );
   }
+  if (slug === "gridlock") {
+    return (
+      <svg viewBox="0 0 64 64" fill="none" className={className}>
+        {/* sokak ızgarası + çekirdek + çatı tareti */}
+        <path d="M6 22 H58 M6 42 H58 M22 6 V58 M42 6 V58" stroke="#4ade80" strokeWidth="1.4" opacity="0.45" />
+        <circle cx="32" cy="32" r="6" stroke="#bbf7d0" strokeWidth="2" />
+        <circle cx="32" cy="32" r="2.4" fill="#4ade80" />
+        <path d="M8 42 H20 M44 22 H56" stroke="#f87171" strokeWidth="2.4" strokeLinecap="round" strokeDasharray="2 4" />
+        <rect x="44" y="40" width="8" height="8" fill="#e2e8f0" />
+        <path d="M48 40 V33" stroke="#e2e8f0" strokeWidth="2" strokeLinecap="round" />
+        <circle cx="48" cy="44" r="12" stroke="#4ade80" strokeWidth="1" opacity="0.4" strokeDasharray="2 3" />
+      </svg>
+    );
+  }
+  if (slug === "freefall") {
+    return (
+      <svg viewBox="0 0 64 64" fill="none" className={className}>
+        {/* kuleler arasında dalış + halka */}
+        <path d="M8 60 V30 M14 60 V38 M50 60 V24 M56 60 V34" stroke="#38bdf8" strokeWidth="3" opacity="0.5" />
+        <ellipse cx="32" cy="40" rx="9" ry="4" stroke="#f0abfc" strokeWidth="1.8" />
+        <path d="M32 10 L24 20 L32 17 L40 20 Z" fill="#e0f2fe" />
+        <path d="M32 18 V28" stroke="#38bdf8" strokeWidth="1.2" strokeDasharray="2 2" />
+        <path d="M24 20 L18 12 M40 20 L46 12" stroke="#38bdf8" strokeWidth="1.2" opacity="0.7" />
+      </svg>
+    );
+  }
+  if (slug === "override") {
+    return (
+      <svg viewBox="0 0 64 64" fill="none" className={className}>
+        {/* mikro drone + kamera görüş konisi */}
+        <path d="M10 10 L30 40 L4 34 Z" fill="#fb7185" opacity="0.18" />
+        <rect x="6" y="6" width="9" height="6" rx="1" fill="#fecdd3" />
+        <ellipse cx="44" cy="36" rx="12" ry="3.4" stroke="#fb7185" strokeWidth="1.8" />
+        <rect x="39" y="34" width="10" height="5" rx="2" fill="#e2e8f0" />
+        <circle cx="44" cy="44" r="1.6" fill="#22d3ee" />
+        <path d="M36 50 h16" stroke="#fb7185" strokeWidth="1.4" strokeDasharray="1 3" strokeLinecap="round" />
+      </svg>
+    );
+  }
   return null;
 }
